@@ -1,0 +1,51 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:sys="clr-namespace:System;assembly=mscorlib">
+    <!-- Tray menu -->
+    <sys:String x:Key="Tray_Open">Mở SmartClipVault</sys:String>
+    <sys:String x:Key="Tray_Backup">Sao lưu…</sys:String>
+    <sys:String x:Key="Tray_Restore">Khôi phục…</sys:String>
+    <sys:String x:Key="Tray_Language">Ngôn ngữ</sys:String>
+    <sys:String x:Key="Tray_Exit">Thoát</sys:String>
+
+    <!-- MainWindow headers -->
+    <sys:String x:Key="Main_ClipboardHistory">Lịch sử Clipboard</sys:String>
+    <sys:String x:Key="Main_SearchPlaceholder">Tìm kiếm…</sys:String>
+    <sys:String x:Key="Main_Boards">Bảng</sys:String>
+    <sys:String x:Key="Main_NewBoard">+ Mới</sys:String>
+    <sys:String x:Key="Main_PinnedClips">Clip đã ghim</sys:String>
+    <sys:String x:Key="Main_AITemplates">Mẫu AI  (dùng {{clip}})</sys:String>
+    <sys:String x:Key="Main_RunTemplate">Chạy mẫu</sys:String>
+
+    <!-- Toolbar buttons -->
+    <sys:String x:Key="Btn_Backup">Sao lưu</sys:String>
+    <sys:String x:Key="Btn_Restore">Khôi phục</sys:String>
+    <sys:String x:Key="Btn_LangEN">EN</sys:String>
+    <sys:String x:Key="Btn_LangVI">VI</sys:String>
+
+    <!-- Clip item -->
+    <sys:String x:Key="Clip_Copy">Sao chép</sys:String>
+    <sys:String x:Key="Clip_Pin">Ghim</sys:String>
+
+    <!-- QuickPaste -->
+    <sys:String x:Key="QuickPaste_Title">Dán nhanh</sys:String>
+
+    <!-- Dialogs -->
+    <sys:String x:Key="Dlg_BoardNameLabel">Tên bảng:</sys:String>
+    <sys:String x:Key="Dlg_NewBoardTitle">Bảng mới</sys:String>
+    <sys:String x:Key="Dlg_OK">OK</sys:String>
+    <sys:String x:Key="Dlg_Cancel">Hủy</sys:String>
+    <sys:String x:Key="Dlg_SelectBoardFirst">Hãy chọn hoặc tạo bảng trước.</sys:String>
+    <sys:String x:Key="Dlg_TemplateEmpty">Mẫu đang trống.</sys:String>
+    <sys:String x:Key="Dlg_TemplateNoClip">Không có clip văn bản không nhạy cảm nào để thay thế {{clip}}.</sys:String>
+    <sys:String x:Key="Dlg_TemplateEmptyOutput">Mẫu cho kết quả trống.</sys:String>
+    <sys:String x:Key="Dlg_TemplateCopied">Đã áp dụng mẫu và sao chép vào clipboard.</sys:String>
+    <sys:String x:Key="Dlg_ClipboardUnavailable">Không thể truy cập clipboard lúc này. Vui lòng thử lại.</sys:String>
+    <sys:String x:Key="Dlg_BackupTitle">Sao lưu SmartClipVault</sys:String>
+    <sys:String x:Key="Dlg_RestoreTitle">Khôi phục SmartClipVault</sys:String>
+    <sys:String x:Key="Dlg_ZipFilter">Tệp nén Zip|*.zip</sys:String>
+    <sys:String x:Key="Dlg_BackupSuccess">Tạo bản sao lưu thành công.</sys:String>
+    <sys:String x:Key="Dlg_BackupFailed">Sao lưu thất bại: {0}</sys:String>
+    <sys:String x:Key="Dlg_RestoreSuccess">Khôi phục thành công.</sys:String>
+    <sys:String x:Key="Dlg_RestoreFailed">Khôi phục thất bại: {0}</sys:String>
+</ResourceDictionary>

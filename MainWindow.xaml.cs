@@ -39,14 +39,31 @@ public partial class MainWindow : Window
     {
         ArgumentNullException.ThrowIfNull(db);
         _db = db;
+        if (Application.Current is App app)
+        {
+            app.Localization.LanguageChanged -= OnLanguageChanged;
+            app.Localization.LanguageChanged += OnLanguageChanged;
+        }
         _ = LoadInitialDataAsync();
     }
 
     public Task RefreshClipsAsync(string? search = null, CancellationToken cancellationToken = default)
         => LoadClipsInternalAsync(search, cancellationToken);
 
+    public Task ReloadDataAsync()
+        => LoadInitialDataAsync();
+
+    public void SetBackupRestoreEnabled(bool enabled)
+    {
+        BackupButton.IsEnabled = enabled;
+        RestoreButton.IsEnabled = enabled;
+    }
+
     protected override void OnClosed(EventArgs e)
     {
+        if (Application.Current is App app)
+            app.Localization.LanguageChanged -= OnLanguageChanged;
+
         _lifetimeCts.Cancel();
         _lifetimeCts.Dispose();
 
@@ -74,6 +91,11 @@ public partial class MainWindow : Window
             var token = _lifetimeCts.Token;
             await LoadClipsInternalAsync(SearchBox.Text, token).ConfigureAwait(true);
             await RefreshBoardsAsync(selectBoardId: null, token).ConfigureAwait(true);
+            if (!token.IsCancellationRequested)
+            {
+                PinnedClipListBox.ItemsSource = null;
+                UpdatePinnedLabel();
+            }
         }
         catch (OperationCanceledException)
         {
@@ -204,8 +226,9 @@ public partial class MainWindow : Window
             return;
         if (BoardListBox.SelectedItem is not BoardItem board)
         {
-            MessageBox.Show(this, "Select or create a board first.", "SmartClipVault",
-                MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show(this,
+                TryGetResource("Dlg_SelectBoardFirst") ?? "Select or create a board first.",
+                "SmartClipVault", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
@@ -225,15 +248,33 @@ public partial class MainWindow : Window
 
     private async void OnBoardSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        UpdatePinnedLabel();
         if (BoardListBox.SelectedItem is BoardItem board)
         {
-            PinnedLabel.Text = $"Pinned — {board.Name}";
             await RefreshPinnedClipsAsync(board.Id).ConfigureAwait(true);
         }
         else
         {
-            PinnedLabel.Text = "Pinned Clips";
+            _pinnedCts?.Cancel();
+            _pinnedCts?.Dispose();
+            _pinnedCts = null;
             PinnedClipListBox.ItemsSource = null;
+        }
+    }
+
+    private void OnLanguageChanged(object? sender, string langCode)
+        => UpdatePinnedLabel();
+
+    private void UpdatePinnedLabel()
+    {
+        if (BoardListBox.SelectedItem is BoardItem board)
+        {
+            var pinnedBase = TryGetResource("Main_PinnedClips") ?? "Pinned Clips";
+            PinnedLabel.Text = $"{pinnedBase} — {board.Name}";
+        }
+        else
+        {
+            PinnedLabel.SetResourceReference(TextBlock.TextProperty, "Main_PinnedClips");
         }
     }
 
@@ -251,7 +292,10 @@ public partial class MainWindow : Window
         if (_db is null)
             return;
 
-        var name = PromptInput("Board name:", "New Board", this);
+        var name = PromptInput(
+            TryGetResource("Dlg_BoardNameLabel") ?? "Board name:",
+            TryGetResource("Dlg_NewBoardTitle") ?? "New Board",
+            this);
         if (string.IsNullOrWhiteSpace(name))
             return;
 
@@ -311,14 +355,14 @@ public partial class MainWindow : Window
         };
         var cancelBtn = new Button
         {
-            Content = "Cancel",
+            Content = TryGetResource("Dlg_Cancel") ?? "Cancel",
             IsCancel = true,
             Padding = new Thickness(12, 4, 12, 4),
             Margin = new Thickness(0, 0, 6, 0)
         };
         var okBtn = new Button
         {
-            Content = "OK",
+            Content = TryGetResource("Dlg_OK") ?? "OK",
             IsDefault = true,
             Padding = new Thickness(16, 4, 16, 4)
         };
@@ -350,8 +394,9 @@ public partial class MainWindow : Window
         var template = TemplateBox.Text;
         if (string.IsNullOrWhiteSpace(template))
         {
-            MessageBox.Show(this, "Template is empty.", "SmartClipVault",
-                MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show(this,
+                TryGetResource("Dlg_TemplateEmpty") ?? "Template is empty.",
+                "SmartClipVault", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
@@ -372,7 +417,8 @@ public partial class MainWindow : Window
 
                 if (latestText is null)
                 {
-                    MessageBox.Show(this, "No non-sensitive text clip is available to substitute for {{clip}}.",
+                    MessageBox.Show(this,
+                        TryGetResource("Dlg_TemplateNoClip") ?? "No non-sensitive text clip is available to substitute for {{clip}}.",
                         "SmartClipVault", MessageBoxButton.OK, MessageBoxImage.Information);
                     return;
                 }
@@ -384,20 +430,23 @@ public partial class MainWindow : Window
 
             if (string.IsNullOrEmpty(result))
             {
-                MessageBox.Show(this, "Template produced empty output.", "SmartClipVault",
-                    MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show(this,
+                    TryGetResource("Dlg_TemplateEmptyOutput") ?? "Template produced empty output.",
+                    "SmartClipVault", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
             if (PasteHelper.TrySetClipboardText(result))
             {
-                MessageBox.Show(this, "Template applied and copied to clipboard.", "SmartClipVault",
-                    MessageBoxButton.OK, MessageBoxImage.Information);
+                MessageBox.Show(this,
+                    TryGetResource("Dlg_TemplateCopied") ?? "Template applied and copied to clipboard.",
+                    "SmartClipVault", MessageBoxButton.OK, MessageBoxImage.Information);
             }
             else
             {
-                MessageBox.Show(this, "Unable to access the clipboard right now. Please try again.", "SmartClipVault",
-                    MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show(this,
+                    TryGetResource("Dlg_ClipboardUnavailable") ?? "Unable to access the clipboard right now. Please try again.",
+                    "SmartClipVault", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
         }
         catch (OperationCanceledException)
@@ -408,6 +457,27 @@ public partial class MainWindow : Window
             Trace.TraceError($"Failed to run template: {ex}");
         }
     }
+
+    private static string? TryGetResource(string key)
+        => Application.Current?.TryFindResource(key) as string;
+
+    private async void OnBackupClick(object sender, RoutedEventArgs e)
+    {
+        if (Application.Current is App app)
+            await app.RunBackupDialogAsync(this, _lifetimeCts.Token).ConfigureAwait(true);
+    }
+
+    private async void OnRestoreClick(object sender, RoutedEventArgs e)
+    {
+        if (Application.Current is App app)
+            await app.RunRestoreDialogAsync(this, _lifetimeCts.Token).ConfigureAwait(true);
+    }
+
+    private void OnLangEnClick(object sender, RoutedEventArgs e)
+        => (Application.Current as App)?.SetLanguage("en");
+
+    private void OnLangViClick(object sender, RoutedEventArgs e)
+        => (Application.Current as App)?.SetLanguage("vi");
 
     private async Task SafeCopyToClipboardAsync(ClipItem clip)
     {

@@ -313,4 +313,125 @@ public class DatabaseService
             command.ExecuteNonQuery();
         }
     }
+
+    /// <summary>Copies the live database to <paramref name="destPath"/> using SQLite online backup.</summary>
+    public void BackupTo(string destPath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(destPath);
+        lock (_syncLock)
+        {
+            using var src = OpenConnection();
+            var destConnString = new SqliteConnectionStringBuilder
+            {
+                DataSource = destPath,
+                Mode = SqliteOpenMode.ReadWriteCreate,
+                Pooling = false
+            }.ToString();
+
+            using var dest = new SqliteConnection(destConnString);
+            try
+            {
+                dest.Open();
+                src.BackupDatabase(dest);
+            }
+            finally
+            {
+                dest.Close();
+                SqliteConnection.ClearPool(dest);
+            }
+        }
+    }
+
+    /// <summary>Replaces the live database with the contents of <paramref name="srcPath"/>.</summary>
+    public void RestoreFrom(string srcPath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(srcPath);
+        if (!File.Exists(srcPath))
+            throw new FileNotFoundException("Backup database file was not found.", srcPath);
+
+        lock (_syncLock)
+        {
+            var srcConnString = new SqliteConnectionStringBuilder
+            {
+                DataSource = srcPath,
+                Mode = SqliteOpenMode.ReadOnly,
+                Pooling = false
+            }.ToString();
+
+            using var src = new SqliteConnection(srcConnString);
+            try
+            {
+                src.Open();
+                ValidateBackupDatabase(src);
+
+                // Clear pooled connections to the live DB so BackupDatabase cannot hit
+                // stale handles or locks and future callers observe the restored state.
+                using (var poolHandle = new SqliteConnection(_connectionString))
+                {
+                    SqliteConnection.ClearPool(poolHandle);
+                }
+
+                using var dest = OpenConnection();
+                try
+                {
+                    SqliteConnection.ClearPool(dest);
+                    src.BackupDatabase(dest);
+                }
+                finally
+                {
+                    dest.Close();
+                    SqliteConnection.ClearPool(dest);
+                }
+            }
+            finally
+            {
+                src.Close();
+                SqliteConnection.ClearPool(src);
+            }
+        }
+    }
+
+    private static void ValidateBackupDatabase(SqliteConnection connection)
+    {
+        try
+        {
+            using (var checkCmd = connection.CreateCommand())
+            {
+                checkCmd.CommandText = "PRAGMA quick_check;";
+                using var reader = checkCmd.ExecuteReader();
+                if (!reader.Read() ||
+                    !string.Equals(reader.GetString(0), "ok", StringComparison.OrdinalIgnoreCase) ||
+                    reader.Read())
+                {
+                    throw new InvalidDataException("Backup database failed integrity check.");
+                }
+            }
+
+            using (var tableCmd = connection.CreateCommand())
+            {
+                tableCmd.CommandText = """
+                    SELECT COUNT(*) FROM sqlite_master
+                    WHERE type = 'table' AND name IN ('clips', 'boards');
+                    """;
+                var tableCount = Convert.ToInt64(tableCmd.ExecuteScalar(), CultureInfo.InvariantCulture);
+                if (tableCount != 2)
+                    throw new InvalidDataException("Backup database is missing required tables.");
+            }
+
+            foreach (var sql in new[]
+                     {
+                         "SELECT Id, ContentType, TextContent, ImagePath, OcrText, IsSensitive, CreatedAt, PinBoardId FROM clips LIMIT 0;",
+                         "SELECT Id, Name, CreatedAt FROM boards LIMIT 0;"
+                     })
+            {
+                using var schemaCmd = connection.CreateCommand();
+                schemaCmd.CommandText = sql;
+                using var schemaReader = schemaCmd.ExecuteReader();
+            }
+        }
+        catch (SqliteException ex)
+        {
+            throw new InvalidDataException($"Backup database is invalid or corrupt: {ex.Message}", ex);
+        }
+    }
 }

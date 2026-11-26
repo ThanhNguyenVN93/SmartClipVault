@@ -1,0 +1,51 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:sys="clr-namespace:System;assembly=mscorlib">
+    <!-- Tray menu -->
+    <sys:String x:Key="Tray_Open">Open SmartClipVault</sys:String>
+    <sys:String x:Key="Tray_Backup">Backup…</sys:String>
+    <sys:String x:Key="Tray_Restore">Restore…</sys:String>
+    <sys:String x:Key="Tray_Language">Language</sys:String>
+    <sys:String x:Key="Tray_Exit">Exit</sys:String>
+
+    <!-- MainWindow headers -->
+    <sys:String x:Key="Main_ClipboardHistory">Clipboard History</sys:String>
+    <sys:String x:Key="Main_SearchPlaceholder">Search…</sys:String>
+    <sys:String x:Key="Main_Boards">Boards</sys:String>
+    <sys:String x:Key="Main_NewBoard">+ New</sys:String>
+    <sys:String x:Key="Main_PinnedClips">Pinned Clips</sys:String>
+    <sys:String x:Key="Main_AITemplates">AI Prompt Templates  (use {{clip}})</sys:String>
+    <sys:String x:Key="Main_RunTemplate">Run Template</sys:String>
+
+    <!-- Toolbar buttons -->
+    <sys:String x:Key="Btn_Backup">Backup</sys:String>
+    <sys:String x:Key="Btn_Restore">Restore</sys:String>
+    <sys:String x:Key="Btn_LangEN">EN</sys:String>
+    <sys:String x:Key="Btn_LangVI">VI</sys:String>
+
+    <!-- Clip item -->
+    <sys:String x:Key="Clip_Copy">Copy</sys:String>
+    <sys:String x:Key="Clip_Pin">Pin</sys:String>
+
+    <!-- QuickPaste -->
+    <sys:String x:Key="QuickPaste_Title">Quick Paste</sys:String>
+
+    <!-- Dialogs -->
+    <sys:String x:Key="Dlg_BoardNameLabel">Board name:</sys:String>
+    <sys:String x:Key="Dlg_NewBoardTitle">New Board</sys:String>
+    <sys:String x:Key="Dlg_OK">OK</sys:String>
+    <sys:String x:Key="Dlg_Cancel">Cancel</sys:String>
+    <sys:String x:Key="Dlg_SelectBoardFirst">Select or create a board first.</sys:String>
+    <sys:String x:Key="Dlg_TemplateEmpty">Template is empty.</sys:String>
+    <sys:String x:Key="Dlg_TemplateNoClip">No non-sensitive text clip is available to substitute for {{clip}}.</sys:String>
+    <sys:String x:Key="Dlg_TemplateEmptyOutput">Template produced empty output.</sys:String>
+    <sys:String x:Key="Dlg_TemplateCopied">Template applied and copied to clipboard.</sys:String>
+    <sys:String x:Key="Dlg_ClipboardUnavailable">Unable to access the clipboard right now. Please try again.</sys:String>
+    <sys:String x:Key="Dlg_BackupTitle">Backup SmartClipVault</sys:String>
+    <sys:String x:Key="Dlg_RestoreTitle">Restore SmartClipVault</sys:String>
+    <sys:String x:Key="Dlg_ZipFilter">Zip archive|*.zip</sys:String>
+    <sys:String x:Key="Dlg_BackupSuccess">Backup created successfully.</sys:String>
+    <sys:String x:Key="Dlg_BackupFailed">Backup failed: {0}</sys:String>
+    <sys:String x:Key="Dlg_RestoreSuccess">Restore completed successfully.</sys:String>
+    <sys:String x:Key="Dlg_RestoreFailed">Restore failed: {0}</sys:String>
+</ResourceDictionary>
