@@ -20,4 +20,5 @@ public class ClipItem
     public bool IsStarred { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public long? PinBoardId { get; set; }
+    public string? SourceApp { get; set; }
 }

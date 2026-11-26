@@ -10,6 +10,10 @@ namespace SmartClipVault.Views;
 
 public partial class SettingsWindow : Window
 {
+    private const int MinMaxHistoryItems = 10;
+    // SettingsService.Normalize clamps values < 10 to 10; represent UI "Unlimited" (Tag="0") as int.MaxValue.
+    private const int UnlimitedMaxHistoryItems = int.MaxValue;
+
     private readonly SettingsService _settingsService;
 
     public SettingsWindow(SettingsService settingsService)
@@ -31,6 +35,16 @@ public partial class SettingsWindow : Window
         AutoClearDaysBox.Text = s.AutoClearDays.ToString(CultureInfo.InvariantCulture);
         IncludeImagesCheck.IsChecked = s.IncludeImagesInBackup;
         AutoBackupBeforeRestoreCheck.IsChecked = s.AutoBackupBeforeRestore;
+        PlayToastSoundCheck.IsChecked = s.PlayToastSound;
+        EnableOcrCheck.IsChecked = s.EnableOcr;
+        SelectComboByTag(LanguageCombo, s.Language, 0);
+        SelectComboByTag(ThemeCombo, s.Theme, 0);
+        DataDirectoryBox.Text = s.DataDirectory ?? string.Empty;
+        var maxHistoryTag = s.MaxHistoryItems >= UnlimitedMaxHistoryItems
+            ? "0"
+            : s.MaxHistoryItems.ToString(CultureInfo.InvariantCulture);
+        SelectComboByTag(MaxHistoryCombo, maxHistoryTag, 1);
+        SelectComboByTag(AutoLockCombo, s.AutoLockMinutes.ToString(CultureInfo.InvariantCulture), 0);
         UpdatePinStatus(s.PinHash != null);
 
         foreach (ComboBoxItem item in FontScaleCombo.Items)
@@ -179,6 +193,31 @@ public partial class SettingsWindow : Window
             .ToList();
 
         var current = _settingsService.GetSnapshot();
+
+        var language = current.Language;
+        if (LanguageCombo.SelectedItem is ComboBoxItem langItem && langItem.Tag is string lang && !string.IsNullOrWhiteSpace(lang))
+            language = lang;
+
+        var theme = current.Theme;
+        if (ThemeCombo.SelectedItem is ComboBoxItem themeItem && themeItem.Tag is string selectedTheme && !string.IsNullOrWhiteSpace(selectedTheme))
+            theme = selectedTheme;
+
+        var maxHistoryItems = current.MaxHistoryItems;
+        if (MaxHistoryCombo.SelectedItem is ComboBoxItem maxItem && maxItem.Tag is string maxTag &&
+            int.TryParse(maxTag, NumberStyles.Integer, CultureInfo.InvariantCulture, out var maxHist))
+        {
+            maxHistoryItems = maxHist <= 0
+                ? UnlimitedMaxHistoryItems
+                : Math.Max(MinMaxHistoryItems, maxHist);
+        }
+
+        var autoLockMinutes = current.AutoLockMinutes;
+        if (AutoLockCombo.SelectedItem is ComboBoxItem lockItem && lockItem.Tag is string lockTag &&
+            int.TryParse(lockTag, NumberStyles.Integer, CultureInfo.InvariantCulture, out var autoLock))
+        {
+            autoLockMinutes = Math.Max(0, autoLock);
+        }
+
         var updated = new AppSettings
         {
             AutoStartWithWindows = AutoStartCheck.IsChecked == true,
@@ -191,8 +230,16 @@ public partial class SettingsWindow : Window
             UiFontScale = scale,
             IncludeImagesInBackup = IncludeImagesCheck.IsChecked == true,
             AutoBackupBeforeRestore = AutoBackupBeforeRestoreCheck.IsChecked == true,
+            PlayToastSound = PlayToastSoundCheck.IsChecked == true,
+            EnableOcr = EnableOcrCheck.IsChecked == true,
+            Language = language,
+            Theme = theme,
+            DataDirectory = string.IsNullOrWhiteSpace(DataDirectoryBox.Text) ? null : DataDirectoryBox.Text.Trim(),
+            MaxHistoryItems = maxHistoryItems,
+            AutoLockMinutes = autoLockMinutes,
             PinHash = current.PinHash,
             PinSalt = current.PinSalt,
+            QuickPasteHotkey = current.QuickPasteHotkey,
         };
 
         try
@@ -216,6 +263,7 @@ public partial class SettingsWindow : Window
             return;
         }
 
+        (Application.Current as App)?.SetLanguage(updated.Language);
         DialogResult = true;
         Close();
     }
@@ -224,5 +272,61 @@ public partial class SettingsWindow : Window
     {
         DialogResult = false;
         Close();
+    }
+
+    private static void SelectComboByTag(ComboBox combo, string tagValue, int fallbackIndex)
+    {
+        foreach (ComboBoxItem item in combo.Items)
+        {
+            if (string.Equals(item.Tag as string, tagValue, StringComparison.OrdinalIgnoreCase))
+            {
+                combo.SelectedItem = item;
+                return;
+            }
+        }
+        if (combo.Items.Count > fallbackIndex)
+            combo.SelectedIndex = fallbackIndex;
+    }
+
+    private void OnBrowseDataDirClick(object sender, RoutedEventArgs e)
+    {
+        var dlg = new Microsoft.Win32.OpenFolderDialog
+        {
+            Title = "Select Data & Sync Folder"
+        };
+        if (dlg.ShowDialog(this) == true && !string.IsNullOrWhiteSpace(dlg.FolderName))
+        {
+            DataDirectoryBox.Text = dlg.FolderName;
+        }
+    }
+
+    private void OnClearHistoryClick(object sender, RoutedEventArgs e)
+    {
+        var result = MessageBox.Show(this,
+            "Delete all unpinned, unstarred clipboard history? This cannot be undone.",
+            "SmartClipVault", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+        if (result != MessageBoxResult.Yes)
+            return;
+
+        if (Application.Current is App app && app.MainWindow is MainWindow mw)
+        {
+            mw.ClearUnpinnedHistoryFromSettings();
+        }
+        ToastWindow.ShowToast("History cleared!");
+    }
+
+    private void OnResetDefaultsClick(object sender, RoutedEventArgs e)
+    {
+        var defaults = new AppSettings();
+        var current = _settingsService.GetSnapshot();
+        defaults.PinHash = current.PinHash;
+        defaults.PinSalt = current.PinSalt;
+        LoadFromSettings(defaults);
+    }
+
+    private async void OnCheckUpdatesClick(object sender, RoutedEventArgs e)
+    {
+        if (Application.Current is App app)
+            await app.CheckForUpdatesAsync().ConfigureAwait(true);
     }
 }

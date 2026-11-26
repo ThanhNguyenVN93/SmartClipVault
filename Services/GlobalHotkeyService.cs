@@ -9,8 +9,10 @@ namespace SmartClipVault.Services;
 public sealed class GlobalHotkeyService : IDisposable
 {
     private const int WM_HOTKEY = 0x0312;
+    private const uint MOD_ALT = 0x0001;
     private const uint MOD_CONTROL = 0x0002;
     private const uint MOD_SHIFT = 0x0004;
+    private const uint MOD_WIN = 0x0008;
     private const uint MOD_NOREPEAT = 0x4000;
     private const uint VK_V = 0x56;
     private const int HotkeyId = 9001;
@@ -33,11 +35,66 @@ public sealed class GlobalHotkeyService : IDisposable
 
     public bool IsRegistered => _isRegistered;
 
-    public bool Register(Window? owner = null)
+    public static bool TryParseHotkey(string? hotkey, out uint modifiers, out uint vk)
+    {
+        modifiers = MOD_NOREPEAT;
+        vk = 0;
+
+        if (string.IsNullOrWhiteSpace(hotkey))
+            return false;
+
+        var parts = hotkey.Split('+', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        foreach (var part in parts)
+        {
+            switch (part.ToUpperInvariant())
+            {
+                case "CTRL":
+                case "CONTROL":
+                    modifiers |= MOD_CONTROL;
+                    break;
+                case "SHIFT":
+                    modifiers |= MOD_SHIFT;
+                    break;
+                case "ALT":
+                    modifiers |= MOD_ALT;
+                    break;
+                case "WIN":
+                case "WINDOWS":
+                    modifiers |= MOD_WIN;
+                    break;
+                default:
+                    if (part.Length == 1)
+                        vk = (uint)char.ToUpperInvariant(part[0]);
+                    else
+                        return false;
+                    break;
+            }
+        }
+
+        return vk != 0 && (modifiers & ~MOD_NOREPEAT) != 0;
+    }
+
+    public bool Register(Window? owner = null, string? hotkey = null)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
         UnregisterCurrent();
+
+        uint fsModifiers;
+        uint vk;
+        string hotkeyLabel;
+        if (!string.IsNullOrWhiteSpace(hotkey) && TryParseHotkey(hotkey, out var parsedMods, out var parsedVk))
+        {
+            fsModifiers = parsedMods;
+            vk = parsedVk;
+            hotkeyLabel = hotkey;
+        }
+        else
+        {
+            fsModifiers = MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT;
+            vk = VK_V;
+            hotkeyLabel = "Ctrl+Shift+V";
+        }
 
         HwndSource? hwndSource = null;
         var ownsSource = false;
@@ -69,10 +126,10 @@ public sealed class GlobalHotkeyService : IDisposable
 
             hwndSource.AddHook(WndProc);
 
-            if (!RegisterHotKey(hwndSource.Handle, HotkeyId, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, VK_V))
+            if (!RegisterHotKey(hwndSource.Handle, HotkeyId, fsModifiers, vk))
             {
                 var error = Marshal.GetLastWin32Error();
-                Trace.TraceWarning($"Failed to register global hotkey Ctrl+Shift+V. Win32 error: {error}");
+                Trace.TraceWarning($"Failed to register global hotkey {hotkeyLabel}. Win32 error: {error}");
                 CleanupHwndSource(hwndSource, ownsSource, unregisterHotkey: false);
                 return false;
             }

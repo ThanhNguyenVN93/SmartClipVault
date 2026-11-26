@@ -1,0 +1,50 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Run SelfTest
+        run: dotnet run --project SelfTest/SelfTest.csproj -c Release
+
+      - name: Publish Single-File Win-x64
+        run: |
+          dotnet publish SmartClipVault.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o publish
+
+      - name: Package Zip and SHA256SUMS
+        shell: pwsh
+        run: |
+          $tag = if ($env:GITHUB_REF_NAME -match '^v') { $env:GITHUB_REF_NAME } else { "v1.0.0" }
+          $zipName = "SmartClipVault-$tag-win-x64.zip"
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Compress-Archive -Path "publish\SmartClipVault.exe" -DestinationPath "dist\$zipName" -Force
+          $hash = (Get-FileHash "dist\$zipName" -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $zipName" | Out-File -FilePath "dist\SHA256SUMS.txt" -Encoding ascii
+          Get-ChildItem dist
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/SmartClipVault-*-win-x64.zip
+            dist/SHA256SUMS.txt
+          generate_release_notes: true

@@ -39,12 +39,16 @@
 
     <!-- QuickPaste -->
     <sys:String x:Key="QuickPaste_Title">Quick Paste</sys:String>
+    <sys:String x:Key="QuickPaste_SearchPlaceholder">Search…</sys:String>
 
     <!-- Dialogs -->
     <sys:String x:Key="Dlg_BoardNameLabel">Board name:</sys:String>
     <sys:String x:Key="Dlg_NewBoardTitle">New Board</sys:String>
     <sys:String x:Key="Dlg_OK">OK</sys:String>
     <sys:String x:Key="Dlg_Cancel">Cancel</sys:String>
+    <sys:String x:Key="Dlg_EditTextTitle">Edit Clip Text</sys:String>
+    <sys:String x:Key="Dlg_ConfirmDelete">Delete this clip permanently?</sys:String>
+    <sys:String x:Key="Clip_SensitiveMasked">[Sensitive content hidden]</sys:String>
     <sys:String x:Key="Dlg_SelectBoardFirst">Select or create a board first.</sys:String>
     <sys:String x:Key="Dlg_TemplateEmpty">Template is empty.</sys:String>
     <sys:String x:Key="Dlg_TemplateNoClip">No non-sensitive text clip is available to substitute for {{clip}}.</sys:String>
@@ -79,6 +83,11 @@
     <sys:String x:Key="Dlg_UpdateAvailable">Version {0} is available. Do you want to update now?</sys:String>
     <sys:String x:Key="Dlg_UpToDate">SmartClipVault is up to date.</sys:String>
     <sys:String x:Key="Dlg_UpdateFailed">Update failed: {0}</sys:String>
+
+    <!-- Clip context menus -->
+    <sys:String x:Key="Menu_EditText">Edit Text…</sys:String>
+    <sys:String x:Key="Menu_Delete">Delete</sys:String>
+    <sys:String x:Key="Menu_Unpin">Unpin</sys:String>
 
     <!-- Context menu transforms -->
     <sys:String x:Key="Menu_SpecialOps">Special Copy/Paste Operations</sys:String>
@@ -118,4 +127,27 @@
     <!-- Settings — backup options -->
     <sys:String x:Key="Settings_IncludeImagesInBackup">Include images in backup</sys:String>
     <sys:String x:Key="Settings_AutoBackupBeforeRestore">Auto-backup before restore</sys:String>
+
+    <!-- Tooltips -->
+    <sys:String x:Key="Tip_Settings">Open application settings (Ctrl+L to lock)</sys:String>
+    <sys:String x:Key="Tip_Backup">Export clipboard database and images to a .zip archive</sys:String>
+    <sys:String x:Key="Tip_Restore">Restore clipboard database and images from a .zip archive</sys:String>
+    <sys:String x:Key="Tip_LangEN">Switch interface language to English</sys:String>
+    <sys:String x:Key="Tip_LangVI">Switch interface language to Vietnamese</sys:String>
+    <sys:String x:Key="Tip_FilterAll">Show all captured clips (text and images)</sys:String>
+    <sys:String x:Key="Tip_FilterText">Show only text clips</sys:String>
+    <sys:String x:Key="Tip_FilterImages">Show only image clips (hover for large preview)</sys:String>
+    <sys:String x:Key="Tip_ClipCopy">Copy this clip to clipboard</sys:String>
+    <sys:String x:Key="Tip_ClipPin">Pin this clip to the selected board</sys:String>
+    <sys:String x:Key="Tip_RunTemplate">Run AI template on the selected clip using {{clip}} placeholder</sys:String>
+    <sys:String x:Key="Tip_Settings_AutoStart">Automatically launch SmartClipVault when Windows starts</sys:String>
+    <sys:String x:Key="Tip_Settings_StartHidden">Start minimized to the system tray instead of showing the main window</sys:String>
+    <sys:String x:Key="Tip_Settings_DoubleClickTray">Double-click the tray icon to toggle the main window</sys:String>
+    <sys:String x:Key="Tip_Settings_CaptureHistory">Enable or pause automatic clipboard history capture</sys:String>
+    <sys:String x:Key="Tip_Settings_AutoStar">Automatically star a clip when copied twice within 1 second</sys:String>
+    <sys:String x:Key="Tip_Settings_ExcludedApps">Process names (one per line, e.g. 1Password) ignored by clipboard capture</sys:String>
+    <sys:String x:Key="Tip_Settings_AutoClearDays">Delete unpinned, unstarred clips older than N days (0 = keep forever)</sys:String>
+    <sys:String x:Key="Tip_Settings_IncludeImages">Include captured PNG images in backup .zip archives</sys:String>
+    <sys:String x:Key="Tip_Settings_AutoBackup">Automatically save a safety backup before restoring from an archive</sys:String>
+    <sys:String x:Key="Tip_Settings_PinLock">Set a 4–8 digit PIN to lock SmartClipVault with Ctrl+L</sys:String>
 </ResourceDictionary>

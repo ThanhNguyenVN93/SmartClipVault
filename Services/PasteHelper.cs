@@ -14,6 +14,8 @@ namespace SmartClipVault.Services;
 public static class PasteHelper
 {
     private const long MaxImageFileBytes = 64L * 1024 * 1024;
+    private const int MaxDecodedImageDimension = 16384;
+    private const long MaxDecodedImagePixels = 64_000_000L;
     private const int SwRestore = 9;
     private const int PasteFocusDelayMs = 50;
 
@@ -129,6 +131,7 @@ public static class PasteHelper
     public static string FormatClipPreview(ClipItem clip, int maxLength = 250)
     {
         ArgumentNullException.ThrowIfNull(clip);
+        ArgumentOutOfRangeException.ThrowIfNegative(maxLength);
 
         if (clip.IsSensitive)
             return "***";
@@ -239,7 +242,7 @@ public static class PasteHelper
         return false;
     }
 
-    private static bool HasReparsePointSubdirectory(string candidateFile, string normalizedBaseNoSlash)
+    internal static bool HasReparsePointSubdirectory(string candidateFile, string normalizedBaseNoSlash)
     {
         var current = Path.GetDirectoryName(candidateFile);
         while (!string.IsNullOrEmpty(current) &&
@@ -293,7 +296,29 @@ public static class PasteHelper
         }, cancellationToken);
     }
 
-    private static BitmapImage? LoadBitmapFromValidatedPath(
+    internal static bool TryGetValidatedImageDimensions(string validatedPath, out int pixelWidth, out int pixelHeight)
+    {
+        pixelWidth = 0;
+        pixelHeight = 0;
+
+        try
+        {
+            using var stream = new FileStream(
+                validatedPath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete);
+
+            return TryReadValidatedFrameDimensions(stream, validatedPath, out pixelWidth, out pixelHeight);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or InvalidOperationException or FormatException or ArgumentException or ExternalException or OutOfMemoryException or ThreadStateException)
+        {
+            Trace.TraceWarning($"Failed to inspect clipboard image '{validatedPath}': {ex.GetType().Name}: {ex.Message}");
+            return false;
+        }
+    }
+
+    internal static BitmapImage? LoadBitmapFromValidatedPath(
         string validatedPath,
         int? targetPixelSize,
         int? maxDecodedDimension)
@@ -306,13 +331,15 @@ public static class PasteHelper
                 FileAccess.Read,
                 FileShare.ReadWrite | FileShare.Delete);
 
+            if (!TryReadValidatedFrameDimensions(stream, validatedPath, out var pw, out var ph))
+                return null;
+
             int? decodeWidth = null;
             int? decodeHeight = null;
             if (targetPixelSize is int targetPx && maxDecodedDimension is int maxDim)
-            {
-                ComputeThumbnailDecodeDimensions(stream, targetPx, maxDim, out decodeWidth, out decodeHeight);
-                stream.Position = 0;
-            }
+                ComputeThumbnailDecodeDimensions(pw, ph, targetPx, maxDim, out decodeWidth, out decodeHeight);
+
+            stream.Position = 0;
 
             var bitmap = new BitmapImage();
             bitmap.BeginInit();
@@ -326,15 +353,45 @@ public static class PasteHelper
             bitmap.Freeze();
             return bitmap;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or InvalidOperationException or FormatException or ArgumentException or ExternalException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or InvalidOperationException or FormatException or ArgumentException or ExternalException or OutOfMemoryException or ThreadStateException)
         {
             Trace.TraceWarning($"Failed to load clipboard image '{validatedPath}': {ex.GetType().Name}: {ex.Message}");
             return null;
         }
     }
 
-    private static void ComputeThumbnailDecodeDimensions(
+    private static bool TryReadValidatedFrameDimensions(
         Stream stream,
+        string validatedPath,
+        out int pixelWidth,
+        out int pixelHeight)
+    {
+        pixelWidth = 0;
+        pixelHeight = 0;
+
+        var decoder = BitmapDecoder.Create(stream, BitmapCreateOptions.DelayCreation, BitmapCacheOption.None);
+        if (decoder.Frames.Count == 0)
+            return false;
+
+        var frame = decoder.Frames[0];
+        var pw = frame.PixelWidth;
+        var ph = frame.PixelHeight;
+        if (pw <= 0 || ph <= 0 ||
+            pw > MaxDecodedImageDimension || ph > MaxDecodedImageDimension ||
+            (long)pw * ph > MaxDecodedImagePixels)
+        {
+            Trace.TraceWarning($"Skipping oversized or invalid image '{validatedPath}' ({pw}x{ph}).");
+            return false;
+        }
+
+        pixelWidth = pw;
+        pixelHeight = ph;
+        return true;
+    }
+
+    private static void ComputeThumbnailDecodeDimensions(
+        int pw,
+        int ph,
         int targetPixelSize,
         int maxDecodedDimension,
         out int? decodeWidth,
@@ -344,16 +401,6 @@ public static class PasteHelper
         decodeHeight = null;
 
         var effectiveTarget = Math.Min(targetPixelSize, maxDecodedDimension);
-        var decoder = BitmapDecoder.Create(stream, BitmapCreateOptions.DelayCreation, BitmapCacheOption.None);
-        if (decoder.Frames.Count == 0)
-        {
-            decodeWidth = effectiveTarget;
-            return;
-        }
-
-        var frame = decoder.Frames[0];
-        var pw = frame.PixelWidth;
-        var ph = frame.PixelHeight;
         if (pw <= 0 || ph <= 0)
         {
             decodeWidth = effectiveTarget;
@@ -445,12 +492,16 @@ public static class PasteHelper
 
     private static async Task RestoreAndSendPasteAsync(Action? hidePopup, CancellationToken cancellationToken)
     {
-        RestorePreviousForegroundWindow();
         hidePopup?.Invoke();
+        RestorePreviousForegroundWindow();
+
+        if (_previousForeground == IntPtr.Zero || !IsWindow(_previousForeground))
+            return;
 
         // Allow the target window on Windows 11 to process activation and keyboard focus before Ctrl+V.
         await Task.Delay(PasteFocusDelayMs, cancellationToken).ConfigureAwait(true);
-        SendCtrlV();
+        if (_previousForeground != IntPtr.Zero && IsWindow(_previousForeground))
+            SendCtrlV();
     }
 
     private static void RestorePreviousForegroundWindow()

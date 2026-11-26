@@ -25,10 +25,13 @@ public sealed class ClipboardMonitorService : IDisposable
     private const int WmClipboardUpdate = 0x031D;
     private const uint CfDib = 8;
     private const uint CfUnicodeText = 13;
+    private const uint CfHDrop = 15;
     private const int ErrorAccessDenied = 5;
     private const int MaxRetries = 5;
     private const int MaxClipboardChars = 4_000_000;
     private const int MaxClipboardImageBytes = 64 * 1024 * 1024;
+    private const uint MaxDecodedImageDimension = 16384;
+    private const ulong MaxDecodedImagePixels = 64_000_000;
     private static readonly IntPtr HwndMessage = new(-3);
 
     private static readonly Lock ActiveMonitorsLock = new();
@@ -128,6 +131,9 @@ public sealed class ClipboardMonitorService : IDisposable
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern nuint GlobalSize(IntPtr hMem);
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    private static extern uint DragQueryFile(IntPtr hDrop, uint iFile, [Out] char[]? lpszFile, uint cch);
 
     public void Start()
     {
@@ -344,6 +350,7 @@ public sealed class ClipboardMonitorService : IDisposable
         try
         {
             var cancellationToken = cts.Token;
+            var sourceApp = GetForegroundProcessName();
 
             for (var attempt = 0; attempt < MaxRetries; attempt++)
             {
@@ -353,13 +360,13 @@ public sealed class ClipboardMonitorService : IDisposable
                 var settings = _settings?.GetSnapshot();
                 if (settings is not null && !settings.CaptureHistory)
                 {
-                    ClearLastCapturedTextState();
+                    ResetDeduplicationState();
                     return;
                 }
 
                 if (settings is not null && IsForegroundAppExcluded(settings.ExcludedApps))
                 {
-                    ClearLastCapturedTextState();
+                    ResetDeduplicationState();
                     return;
                 }
 
@@ -373,10 +380,28 @@ public sealed class ClipboardMonitorService : IDisposable
                 if (hwnd == IntPtr.Zero)
                     return;
 
-                if (TryReadClipboardData(hwnd, out var text, out var dibBytes, out var shouldRetry))
+                if (TryReadClipboardData(hwnd, out var text, out var dibBytes, out var filePaths, out var shouldRetry))
                 {
                     if (ShouldSuppressClipboardUpdate())
                         return;
+
+                    if (filePaths is { Length: > 0 })
+                    {
+                        ResetDeduplicationState();
+                        var fileItem = new ClipItem
+                        {
+                            ContentType = ClipContentType.Files,
+                            TextContent = string.Join("\n", filePaths),
+                            SourceApp = sourceApp,
+                            CreatedAt = DateTime.UtcNow
+                        };
+                        if (!_disposed && !cancellationToken.IsCancellationRequested)
+                        {
+                            try { ClipCaptured?.Invoke(this, fileItem); }
+                            catch (Exception ex) { Trace.TraceError($"ClipCaptured handler threw an exception: {ex}"); }
+                        }
+                        return;
+                    }
 
                     if (!string.IsNullOrWhiteSpace(text))
                     {
@@ -384,16 +409,19 @@ public sealed class ClipboardMonitorService : IDisposable
                         var isDuplicate = IsDuplicateText(trimmed);
                         if (!isDuplicate)
                         {
+                            var isSensitive = SecretDetector.IsSensitive(trimmed);
                             var item = new ClipItem
                             {
                                 ContentType = ClipContentType.Text,
                                 TextContent = trimmed,
+                                IsSensitive = isSensitive,
+                                SourceApp = sourceApp,
                                 CreatedAt = DateTime.UtcNow
                             };
 
                             lock (_stateLock)
                             {
-                                if (settings is { AutoStarOnDoubleCopy: true })
+                                if (!isSensitive && settings is { AutoStarOnDoubleCopy: true })
                                 {
                                     _lastCapturedText = trimmed;
                                     _lastCapturedTextTickMs = Environment.TickCount64;
@@ -428,6 +456,7 @@ public sealed class ClipboardMonitorService : IDisposable
                             lock (_stateLock)
                             {
                                 if (_lastCapturedItem is not null &&
+                                    !_lastCapturedItem.IsSensitive &&
                                     !_lastCapturedStarred &&
                                     _lastCapturedText is not null &&
                                     string.Equals(_lastCapturedText, trimmed, StringComparison.Ordinal))
@@ -461,7 +490,7 @@ public sealed class ClipboardMonitorService : IDisposable
                     else if (dibBytes is not null && !IsDuplicateImage(dibBytes))
                     {
                         ClearLastCapturedTextState();
-                        await SaveAndEmitImageAsync(dibBytes, cancellationToken).ConfigureAwait(false);
+                        await SaveAndEmitImageAsync(dibBytes, sourceApp, cancellationToken).ConfigureAwait(false);
                     }
 
                     return;
@@ -528,10 +557,12 @@ public sealed class ClipboardMonitorService : IDisposable
         }
     }
 
-    private static bool TryReadClipboardData(IntPtr hwnd, out string? text, out byte[]? dibBytes, out bool shouldRetry)
+    private static bool TryReadClipboardData(IntPtr hwnd, out string? text, out byte[]? dibBytes,
+        out string[]? filePaths, out bool shouldRetry)
     {
         text = null;
         dibBytes = null;
+        filePaths = null;
         shouldRetry = false;
 
         if (!OpenClipboard(hwnd))
@@ -543,6 +574,32 @@ public sealed class ClipboardMonitorService : IDisposable
 
         try
         {
+            // CF_HDROP takes priority over text representation of paths
+            if (IsClipboardFormatAvailable(CfHDrop))
+            {
+                var dropHandle = GetClipboardData(CfHDrop);
+                if (dropHandle != IntPtr.Zero)
+                {
+                    var count = DragQueryFile(dropHandle, 0xFFFFFFFF, null, 0);
+                    if (count > 0 && count <= 1024)
+                    {
+                        var paths = new List<string>((int)count);
+                        var buffer = new char[4096];
+                        for (uint i = 0; i < count; i++)
+                        {
+                            var len = DragQueryFile(dropHandle, i, buffer, (uint)buffer.Length);
+                            if (len > 0 && len < buffer.Length)
+                                paths.Add(new string(buffer, 0, (int)len));
+                        }
+                        if (paths.Count > 0)
+                        {
+                            filePaths = [.. paths];
+                            return true;
+                        }
+                    }
+                }
+            }
+
             if (IsClipboardFormatAvailable(CfUnicodeText))
             {
                 var textHandle = GetClipboardData(CfUnicodeText);
@@ -660,7 +717,23 @@ public sealed class ClipboardMonitorService : IDisposable
         }
     }
 
-    private async Task SaveAndEmitImageAsync(byte[] dibBytes, CancellationToken cancellationToken)
+    private static string? GetForegroundProcessName()
+    {
+        var fg = GetForegroundWindow();
+        if (fg == IntPtr.Zero) return null;
+        if (GetWindowThreadProcessId(fg, out var pid) == 0 || pid == 0 || pid > int.MaxValue) return null;
+        try
+        {
+            using var proc = Process.GetProcessById((int)pid);
+            return proc.ProcessName;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private async Task SaveAndEmitImageAsync(byte[] dibBytes, string? sourceApp, CancellationToken cancellationToken)
     {
         string? createdFilePath = null;
         try
@@ -677,6 +750,16 @@ public sealed class ClipboardMonitorService : IDisposable
 
                 using var bmpStream = bmpMemory.AsRandomAccessStream();
                 var decoder = await BitmapDecoder.CreateAsync(bmpStream).AsTask(cancellationToken).ConfigureAwait(false);
+
+                var pixelWidth = decoder.PixelWidth;
+                var pixelHeight = decoder.PixelHeight;
+                if (pixelWidth == 0 || pixelHeight == 0 ||
+                    pixelWidth > MaxDecodedImageDimension || pixelHeight > MaxDecodedImageDimension ||
+                    (ulong)pixelWidth * pixelHeight > MaxDecodedImagePixels)
+                {
+                    Trace.TraceWarning($"Skipping oversized clipboard image ({pixelWidth}x{pixelHeight}).");
+                    return;
+                }
 
                 // CF_DIB (40-byte BITMAPINFOHEADER) uses the 4th byte as padding, not alpha.
                 var biSize = BinaryPrimitives.ReadUInt32LittleEndian(dibBytes.AsSpan(0, 4));
@@ -723,6 +806,7 @@ public sealed class ClipboardMonitorService : IDisposable
                 {
                     ContentType = ClipContentType.Image,
                     ImagePath = filePath,
+                    SourceApp = sourceApp,
                     CreatedAt = DateTime.UtcNow
                 };
 
@@ -810,6 +894,19 @@ public sealed class ClipboardMonitorService : IDisposable
         }
         catch (Exception)
         {
+        }
+    }
+
+    public void ResetDeduplicationState()
+    {
+        lock (_stateLock)
+        {
+            ZeroAndClear(ref _lastTextHash);
+            ZeroAndClear(ref _lastImageHash);
+            _lastCapturedText = null;
+            _lastCapturedTextTickMs = 0;
+            _lastCapturedItem = null;
+            _lastCapturedStarred = false;
         }
     }
 
@@ -943,20 +1040,28 @@ public sealed class ClipboardMonitorService : IDisposable
                 return;
             }
 
-            if (!hwndSource.Dispatcher.HasShutdownStarted && !hwndSource.Dispatcher.HasShutdownFinished)
+            if (wasListening)
             {
                 try
                 {
-                    hwndSource.Dispatcher.Invoke(() => DisposeHwndSource(hwndSource, wasListening));
-                    return;
+                    if (!hwndSource.IsDisposed && hwndSource.Handle != IntPtr.Zero)
+                        RemoveClipboardFormatListener(hwndSource.Handle);
                 }
-                catch (OperationCanceledException)
+                catch (ObjectDisposedException)
                 {
                 }
             }
 
-            if (wasListening && !hwndSource.IsDisposed && hwndSource.Handle != IntPtr.Zero)
-                RemoveClipboardFormatListener(hwndSource.Handle);
+            if (!hwndSource.Dispatcher.HasShutdownStarted && !hwndSource.Dispatcher.HasShutdownFinished)
+            {
+                try
+                {
+                    hwndSource.Dispatcher.BeginInvoke(() => DisposeHwndSource(hwndSource, wasListening: false));
+                }
+                catch (Exception ex) when (ex is InvalidOperationException or OperationCanceledException or ObjectDisposedException)
+                {
+                }
+            }
         }
     }
 }

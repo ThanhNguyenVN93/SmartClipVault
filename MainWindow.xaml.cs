@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Linq;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -13,6 +14,7 @@ using System.Windows.Media;
 using SmartClipVault.Data;
 using SmartClipVault.Models;
 using SmartClipVault.Services;
+using ScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility;
 
 namespace SmartClipVault;
 
@@ -28,19 +30,30 @@ public partial class MainWindow : Window
     {
         private ImageSource? _thumbnail;
 
-        public ClipRow(string preview, string typeLabel, string previewColor, ClipItem clip, ImageSource? thumbnail = null)
+        public ClipRow(string preview, string typeLabel, string previewColor, ClipItem clip,
+                       ImageSource? thumbnail = null, Brush? swatchBrush = null,
+                       Visibility swatchVisibility = Visibility.Collapsed,
+                       string? sourceApp = null)
         {
             Preview = preview;
             TypeLabel = typeLabel;
             PreviewColor = previewColor;
             Clip = clip;
             _thumbnail = thumbnail;
+            SwatchBrush = swatchBrush;
+            SwatchVisibility = swatchVisibility;
+            SourceApp = sourceApp;
+            SourceAppVisibility = string.IsNullOrWhiteSpace(sourceApp) ? Visibility.Collapsed : Visibility.Visible;
         }
 
         public string Preview { get; }
         public string TypeLabel { get; }
         public string PreviewColor { get; }
         public ClipItem Clip { get; }
+        public Brush? SwatchBrush { get; }
+        public Visibility SwatchVisibility { get; }
+        public string? SourceApp { get; }
+        public Visibility SourceAppVisibility { get; }
 
         public ImageSource? Thumbnail
         {
@@ -66,6 +79,9 @@ public partial class MainWindow : Window
 
     private static readonly Regex ClipPlaceholderRegex =
         new(@"\{\{\s*clip\s*\}\}", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex HexColorRegex =
+        new(@"^#(?:[0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$", RegexOptions.Compiled);
 
     private DatabaseService? _db;
     private List<ClipItem> _clips = [];
@@ -169,6 +185,98 @@ public partial class MainWindow : Window
         {
             Trace.TraceError($"MainWindow failed to load initial data: {ex}");
         }
+    }
+
+    private void OnMultiSelectClick(object sender, RoutedEventArgs e)
+    {
+        if (!_isLocked)
+            ClipListBox.SelectAll();
+    }
+
+    private void OnDeselectAllClick(object sender, RoutedEventArgs e)
+    {
+        if (!_isLocked)
+            ClipListBox.UnselectAll();
+    }
+
+    private void OnClearHistoryRangeClick(object sender, RoutedEventArgs e)
+    {
+        if (_isLocked || _db is null || sender is not MenuItem mi || mi.Tag is not string tag)
+            return;
+
+        if (tag == "all")
+        {
+            var confirm = MessageBox.Show(this,
+                "Do you really want to remove ALL unpinned clipboard history items?",
+                "SmartClipVault", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+            if (confirm != MessageBoxResult.Yes)
+                return;
+            _db.ClearUnpinnedHistory();
+        }
+        else
+        {
+            var window = tag switch
+            {
+                "1h" => TimeSpan.FromHours(1),
+                "2h" => TimeSpan.FromHours(2),
+                "1d" => TimeSpan.FromDays(1),
+                "3d" => TimeSpan.FromDays(3),
+                "7d" => TimeSpan.FromDays(7),
+                "30d" => TimeSpan.FromDays(30),
+                _ => TimeSpan.Zero
+            };
+            if (window <= TimeSpan.Zero)
+                return;
+            _db.DeleteRecentUnpinnedClips(window);
+        }
+
+        RefreshClips();
+        Views.ToastWindow.ShowToast("History cleared!");
+    }
+
+    private int _panelMode; // 0 = Both, 1 = History only, 2 = Boards only
+
+    private void OnAlwaysOnTopClick(object sender, RoutedEventArgs e)
+    {
+        Topmost = !Topmost;
+        AlwaysOnTopButton.Background = Topmost
+            ? new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x26, 0x4F, 0x78))
+            : new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x2D, 0x2D, 0x30));
+        Views.ToastWindow.ShowToast(Topmost ? "Always on Top: ON" : "Always on Top: OFF");
+    }
+
+    private void OnPanelModeClick(object sender, RoutedEventArgs e)
+    {
+        _panelMode = (_panelMode + 1) % 3;
+        switch (_panelMode)
+        {
+            case 0:
+                LeftCol.Width = new GridLength(1, GridUnitType.Star);
+                SplitterCol.Width = new GridLength(4);
+                RightCol.Width = new GridLength(320);
+                PanelModeButton.Content = "Panels: Both";
+                break;
+            case 1:
+                LeftCol.Width = new GridLength(1, GridUnitType.Star);
+                SplitterCol.Width = new GridLength(0);
+                RightCol.Width = new GridLength(0);
+                PanelModeButton.Content = "Panels: History";
+                break;
+            case 2:
+                LeftCol.Width = new GridLength(0);
+                SplitterCol.Width = new GridLength(0);
+                RightCol.Width = new GridLength(1, GridUnitType.Star);
+                PanelModeButton.Content = "Panels: Boards";
+                break;
+        }
+    }
+
+    public void ClearUnpinnedHistoryFromSettings()
+    {
+        if (_isLocked || _db is null)
+            return;
+        _db.ClearUnpinnedHistory();
+        RefreshClips();
     }
 
     public void RefreshClips()
@@ -355,7 +463,31 @@ public partial class MainWindow : Window
         };
         if (clip.IsStarred)
             typeLabel = $"★ {typeLabel}";
-        return new ClipRow(preview, typeLabel, color, clip, thumbnail);
+
+        var (swatchBrush, swatchVisibility) = GetColorSwatch(clip);
+        return new ClipRow(preview, typeLabel, color, clip, thumbnail, swatchBrush, swatchVisibility, clip.SourceApp);
+    }
+
+    private static (Brush? brush, Visibility visibility) GetColorSwatch(ClipItem clip)
+    {
+        if (clip.ContentType != ClipContentType.Text || clip.IsSensitive)
+            return (null, Visibility.Collapsed);
+
+        var text = clip.TextContent?.Trim();
+        if (string.IsNullOrEmpty(text) || !HexColorRegex.IsMatch(text))
+            return (null, Visibility.Collapsed);
+
+        try
+        {
+            var color = (Color)ColorConverter.ConvertFromString(text)!;
+            var brush = new SolidColorBrush(color);
+            brush.Freeze();
+            return (brush, Visibility.Visible);
+        }
+        catch
+        {
+            return (null, Visibility.Collapsed);
+        }
     }
 
     private async Task RefreshBoardsAsync(long? selectBoardId = null, CancellationToken cancellationToken = default)
@@ -426,7 +558,143 @@ public partial class MainWindow : Window
         }
     }
 
-    private void OnClipSelectionChanged(object sender, SelectionChangedEventArgs e) { }
+    private void OnClipSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_isLocked || ClipListBox.SelectedItem is not ClipRow row)
+        {
+            PreviewPaneBorder.Visibility = Visibility.Collapsed;
+            PreviewPaneImage.Source = null;
+            PreviewPaneImage.Visibility = Visibility.Collapsed;
+            PreviewPaneText.Text = string.Empty;
+            PreviewPaneText.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        PreviewPaneBorder.Visibility = Visibility.Visible;
+
+        if (row.Clip.ContentType == ClipContentType.Image)
+        {
+            OpenUrlButton.Visibility = Visibility.Collapsed;
+            FormatJsonButton.Visibility = Visibility.Collapsed;
+            PreviewPaneImage.Source = LoadFullPreviewImage(row.Clip.ImagePath) ?? row.Thumbnail;
+            PreviewPaneImage.Visibility = PreviewPaneImage.Source is not null ? Visibility.Visible : Visibility.Collapsed;
+            var ocr = row.Clip.OcrText;
+            PreviewPaneText.Text = string.IsNullOrWhiteSpace(ocr) ? string.Empty : ocr;
+            PreviewPaneText.Visibility = string.IsNullOrWhiteSpace(ocr) ? Visibility.Collapsed : Visibility.Visible;
+        }
+        else
+        {
+            PreviewPaneImage.Source = null;
+            PreviewPaneImage.Visibility = Visibility.Collapsed;
+            if (!row.Clip.IsSensitive && row.Clip.ContentType == ClipContentType.Text)
+            {
+                OpenUrlButton.Visibility = IsHttpUrl(row.Clip.TextContent) ? Visibility.Visible : Visibility.Collapsed;
+                FormatJsonButton.Visibility = IsValidJson(row.Clip.TextContent) ? Visibility.Visible : Visibility.Collapsed;
+            }
+            else
+            {
+                OpenUrlButton.Visibility = Visibility.Collapsed;
+                FormatJsonButton.Visibility = Visibility.Collapsed;
+            }
+            PreviewPaneText.Text = row.Clip.IsSensitive
+                ? (TryGetResource("Clip_SensitiveMasked") ?? "[Sensitive content hidden]")
+                : (row.Clip.TextContent ?? string.Empty);
+            PreviewPaneText.Visibility = Visibility.Visible;
+        }
+    }
+
+    private static bool IsHttpUrl(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+        return Uri.TryCreate(text.Trim(), UriKind.Absolute, out var uri)
+            && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
+    }
+
+    private static bool IsValidJson(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+        var trimmed = text.Trim();
+        if (!(trimmed.StartsWith('{') || trimmed.StartsWith('[')))
+            return false;
+        try
+        {
+            using var _ = System.Text.Json.JsonDocument.Parse(trimmed);
+            return true;
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return false;
+        }
+    }
+
+    private void OnSeqQueueAddClick(object sender, RoutedEventArgs e)
+    {
+        if (_isLocked || ClipListBox.SelectedItem is not ClipRow row || row.Clip.IsSensitive)
+            return;
+        (Application.Current as App)?.EnqueueSequentialClip(row.Clip);
+    }
+
+    private void OnPasteAsPlainTextClick(object sender, RoutedEventArgs e)
+    {
+        if (_isLocked || ClipListBox.SelectedItem is not ClipRow row || row.Clip.IsSensitive)
+            return;
+        if (!string.IsNullOrEmpty(row.Clip.TextContent))
+        {
+            var expanded = PlaceholderService.Expand(row.Clip.TextContent);
+            if (PasteHelper.TrySetClipboardText(expanded))
+                Views.ToastWindow.ShowToast("Copied plain text!");
+        }
+    }
+
+    private void OnShowQrCodeClick(object sender, RoutedEventArgs e)
+    {
+        if (_isLocked || ClipListBox.SelectedItem is not ClipRow row || row.Clip.IsSensitive)
+            return;
+        if (string.IsNullOrWhiteSpace(row.Clip.TextContent))
+            return;
+        var qr = QrCodeService.Generate(row.Clip.TextContent.Trim());
+        if (qr is null)
+        {
+            Views.ToastWindow.ShowToast("Text too long for QR Code");
+            return;
+        }
+        PreviewPaneBorder.Visibility = Visibility.Visible;
+        PreviewPaneImage.Source = qr;
+        PreviewPaneImage.Visibility = Visibility.Visible;
+        Views.ToastWindow.ShowToast("QR Code generated!");
+    }
+
+    private void OnOpenUrlClick(object sender, RoutedEventArgs e)
+    {
+        if (_isLocked || ClipListBox.SelectedItem is not ClipRow row || row.Clip.IsSensitive)
+            return;
+        if (IsHttpUrl(row.Clip.TextContent))
+        {
+            var uri = new Uri(row.Clip.TextContent!.Trim(), UriKind.Absolute);
+            Process.Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true });
+        }
+    }
+
+    private void OnFormatJsonClick(object sender, RoutedEventArgs e)
+    {
+        if (_isLocked || ClipListBox.SelectedItem is not ClipRow row || row.Clip.IsSensitive)
+            return;
+        if (!string.IsNullOrEmpty(row.Clip.TextContent) &&
+            PasteHelper.TrySetClipboardText(TextTransformService.JsonPretty(row.Clip.TextContent)))
+        {
+            Views.ToastWindow.ShowToast("JSON Formatted & Copied!");
+        }
+    }
+
+    private static System.Windows.Media.Imaging.BitmapImage? LoadFullPreviewImage(string? imagePath)
+    {
+        if (!PasteHelper.TryValidateImagePath(imagePath, out var validatedPath))
+            return null;
+
+        return PasteHelper.LoadBitmapFromValidatedPath(validatedPath, targetPixelSize: null, maxDecodedDimension: null);
+    }
 
     private async void OnClipDoubleClick(object sender, MouseButtonEventArgs e)
     {
@@ -771,10 +1039,14 @@ public partial class MainWindow : Window
         (Application.Current as App)?.SetLocked(locked);
         if (locked)
         {
+            PreviewPaneBorder.Visibility = Visibility.Collapsed;
+            PreviewPaneImage.Source = null;
+            PreviewPaneText.Text = string.Empty;
             LockPinBox.Clear();
             LockErrorText.Visibility = Visibility.Collapsed;
             LockOverlay.Visibility = Visibility.Visible;
             LockPinBox.Focus();
+            Views.ToastWindow.ShowToast("Locked!");
         }
         else
         {
@@ -836,13 +1108,186 @@ public partial class MainWindow : Window
 
     private void OnClipContextMenuOpened(object sender, RoutedEventArgs e)
     {
+        if (_isLocked)
+            return;
         var isText = ClipListBox.SelectedItem is ClipRow r
             && r.Clip.ContentType == ClipContentType.Text
             && !r.Clip.IsSensitive
             && !string.IsNullOrEmpty(r.Clip.TextContent);
 
-        if (sender is ContextMenu cm && cm.Items.Count > 0 && cm.Items[0] is MenuItem specialOps)
+        if (sender is not ContextMenu cm)
+            return;
+
+        if (cm.Items.Count > 0 && cm.Items[0] is MenuItem specialOps)
             specialOps.IsEnabled = isText;
+
+        if (cm.Items.Count > 1 && cm.Items[1] is MenuItem editText)
+            editText.IsEnabled = isText;
+    }
+
+    private async void OnEditClipTextClick(object sender, RoutedEventArgs e)
+    {
+        if (_db is null || ClipListBox.SelectedItem is not ClipRow row)
+            return;
+        if (row.Clip.ContentType != ClipContentType.Text || row.Clip.IsSensitive)
+            return;
+
+        var newText = ShowEditTextDialog(row.Clip.TextContent ?? string.Empty, this);
+        if (newText is null)
+            return;
+
+        try
+        {
+            await _db.UpdateClipTextAsync(row.Clip.Id, newText, _lifetimeCts.Token).ConfigureAwait(true);
+            await RefreshClipsAsync(SearchBox.Text, _lifetimeCts.Token).ConfigureAwait(true);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Trace.TraceError($"Failed to edit clip text: {ex}");
+        }
+    }
+
+    private static string? ShowEditTextDialog(string currentText, Window owner)
+    {
+        var dlg = new Window
+        {
+            Title = TryGetResource("Dlg_EditTextTitle") ?? "Edit Clip Text",
+            Owner = owner,
+            Width = 440,
+            Height = 320,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            ResizeMode = ResizeMode.CanResize,
+            Background = new SolidColorBrush(Color.FromRgb(0x25, 0x25, 0x26))
+        };
+
+        var root = new DockPanel { Margin = new Thickness(12) };
+
+        var tb = new TextBox
+        {
+            Text = currentText,
+            Background = new SolidColorBrush(Color.FromRgb(0x1E, 0x1E, 0x1E)),
+            Foreground = Brushes.LightGray,
+            CaretBrush = Brushes.LightGray,
+            BorderBrush = new SolidColorBrush(Color.FromRgb(0x3A, 0x3A, 0x3A)),
+            Padding = new Thickness(6, 4, 6, 4),
+            AcceptsReturn = true,
+            TextWrapping = TextWrapping.Wrap,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto
+        };
+
+        var buttonPanel = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Margin = new Thickness(0, 8, 0, 0)
+        };
+
+        var cancelBtn = new Button
+        {
+            Content = TryGetResource("Dlg_Cancel") ?? "Cancel",
+            IsCancel = true,
+            Padding = new Thickness(12, 4, 12, 4),
+            Margin = new Thickness(0, 0, 6, 0)
+        };
+        var okBtn = new Button
+        {
+            Content = TryGetResource("Dlg_OK") ?? "OK",
+            IsDefault = true,
+            Padding = new Thickness(16, 4, 16, 4)
+        };
+
+        void OnOkClick(object s, RoutedEventArgs args) => dlg.DialogResult = true;
+        void OnLoaded(object s, RoutedEventArgs args) { tb.Focus(); tb.SelectAll(); }
+
+        okBtn.Click += OnOkClick;
+        dlg.Loaded += OnLoaded;
+
+        buttonPanel.Children.Add(cancelBtn);
+        buttonPanel.Children.Add(okBtn);
+
+        DockPanel.SetDock(buttonPanel, Dock.Bottom);
+        root.Children.Add(buttonPanel);
+        root.Children.Add(tb);
+        dlg.Content = root;
+
+        try
+        {
+            return dlg.ShowDialog() == true ? tb.Text : null;
+        }
+        finally
+        {
+            okBtn.Click -= OnOkClick;
+            dlg.Loaded -= OnLoaded;
+        }
+    }
+
+    private async void OnDeleteClipClick(object sender, RoutedEventArgs e)
+    {
+        if (_db is null || ClipListBox.SelectedItem is not ClipRow row)
+            return;
+
+        var confirm = MessageBox.Show(this,
+            TryGetResource("Dlg_ConfirmDelete") ?? "Delete this clip permanently?",
+            "SmartClipVault", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+        if (confirm != MessageBoxResult.Yes)
+            return;
+
+        try
+        {
+            await _db.DeleteClipAsync(row.Clip.Id, _lifetimeCts.Token).ConfigureAwait(true);
+            await RefreshClipsAsync(SearchBox.Text, _lifetimeCts.Token).ConfigureAwait(true);
+            if (BoardListBox.SelectedItem is BoardItem board)
+                await RefreshPinnedClipsAsync(board.Id).ConfigureAwait(true);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Trace.TraceError($"Failed to delete clip: {ex}");
+        }
+    }
+
+    private async void OnDeletePinnedClipClick(object sender, RoutedEventArgs e)
+    {
+        if (_db is null || PinnedClipListBox.SelectedItem is not ClipRow row)
+            return;
+
+        var confirm = MessageBox.Show(this,
+            TryGetResource("Dlg_ConfirmDelete") ?? "Delete this clip permanently?",
+            "SmartClipVault", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+        if (confirm != MessageBoxResult.Yes)
+            return;
+
+        try
+        {
+            await _db.DeleteClipAsync(row.Clip.Id, _lifetimeCts.Token).ConfigureAwait(true);
+            await RefreshClipsAsync(SearchBox.Text, _lifetimeCts.Token).ConfigureAwait(true);
+            if (BoardListBox.SelectedItem is BoardItem board)
+                await RefreshPinnedClipsAsync(board.Id).ConfigureAwait(true);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Trace.TraceError($"Failed to delete pinned clip: {ex}");
+        }
+    }
+
+    private async void OnUnpinClipClick(object sender, RoutedEventArgs e)
+    {
+        if (_db is null || PinnedClipListBox.SelectedItem is not ClipRow row)
+            return;
+
+        try
+        {
+            await _db.UnpinClipAsync(row.Clip.Id, _lifetimeCts.Token).ConfigureAwait(true);
+            if (BoardListBox.SelectedItem is BoardItem board)
+                await RefreshPinnedClipsAsync(board.Id).ConfigureAwait(true);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Trace.TraceError($"Failed to unpin clip: {ex}");
+        }
     }
 
     private void OnTransformClick(object sender, RoutedEventArgs e)

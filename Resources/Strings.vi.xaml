@@ -39,12 +39,16 @@
 
     <!-- QuickPaste -->
     <sys:String x:Key="QuickPaste_Title">Dán nhanh</sys:String>
+    <sys:String x:Key="QuickPaste_SearchPlaceholder">Tìm kiếm…</sys:String>
 
     <!-- Dialogs -->
     <sys:String x:Key="Dlg_BoardNameLabel">Tên bảng:</sys:String>
     <sys:String x:Key="Dlg_NewBoardTitle">Bảng mới</sys:String>
     <sys:String x:Key="Dlg_OK">OK</sys:String>
     <sys:String x:Key="Dlg_Cancel">Hủy</sys:String>
+    <sys:String x:Key="Dlg_EditTextTitle">Chỉnh sửa văn bản clip</sys:String>
+    <sys:String x:Key="Dlg_ConfirmDelete">Xóa clip này vĩnh viễn?</sys:String>
+    <sys:String x:Key="Clip_SensitiveMasked">[Nội dung nhạy cảm đã bị ẩn]</sys:String>
     <sys:String x:Key="Dlg_SelectBoardFirst">Hãy chọn hoặc tạo bảng trước.</sys:String>
     <sys:String x:Key="Dlg_TemplateEmpty">Mẫu đang trống.</sys:String>
     <sys:String x:Key="Dlg_TemplateNoClip">Không có clip văn bản không nhạy cảm nào để thay thế {{clip}}.</sys:String>
@@ -79,6 +83,11 @@
     <sys:String x:Key="Dlg_UpdateAvailable">Phiên bản {0} đã có sẵn. Bạn có muốn cập nhật ngay không?</sys:String>
     <sys:String x:Key="Dlg_UpToDate">SmartClipVault đã là phiên bản mới nhất.</sys:String>
     <sys:String x:Key="Dlg_UpdateFailed">Cập nhật thất bại: {0}</sys:String>
+
+    <!-- Clip context menus -->
+    <sys:String x:Key="Menu_EditText">Chỉnh sửa văn bản…</sys:String>
+    <sys:String x:Key="Menu_Delete">Xóa</sys:String>
+    <sys:String x:Key="Menu_Unpin">Bỏ ghim</sys:String>
 
     <!-- Context menu transforms -->
     <sys:String x:Key="Menu_SpecialOps">Thao tác sao chép/dán đặc biệt</sys:String>
@@ -118,4 +127,27 @@
     <!-- Settings — backup options -->
     <sys:String x:Key="Settings_IncludeImagesInBackup">Bao gồm hình ảnh khi sao lưu</sys:String>
     <sys:String x:Key="Settings_AutoBackupBeforeRestore">Tự sao lưu trước khi khôi phục</sys:String>
+
+    <!-- Tooltips -->
+    <sys:String x:Key="Tip_Settings">Mở cài đặt ứng dụng (Ctrl+L để khóa)</sys:String>
+    <sys:String x:Key="Tip_Backup">Xuất cơ sở dữ liệu và ảnh ra file .zip</sys:String>
+    <sys:String x:Key="Tip_Restore">Khôi phục cơ sở dữ liệu và ảnh từ file .zip</sys:String>
+    <sys:String x:Key="Tip_LangEN">Chuyển ngôn ngữ giao diện sang tiếng Anh</sys:String>
+    <sys:String x:Key="Tip_LangVI">Chuyển ngôn ngữ giao diện sang tiếng Việt</sys:String>
+    <sys:String x:Key="Tip_FilterAll">Hiển thị tất cả clip (văn bản và ảnh)</sys:String>
+    <sys:String x:Key="Tip_FilterText">Chỉ hiển thị clip văn bản</sys:String>
+    <sys:String x:Key="Tip_FilterImages">Chỉ hiển thị clip ảnh (rê chuột để xem ảnh lớn)</sys:String>
+    <sys:String x:Key="Tip_ClipCopy">Chép clip này vào clipboard</sys:String>
+    <sys:String x:Key="Tip_ClipPin">Ghim clip này vào bảng đang chọn</sys:String>
+    <sys:String x:Key="Tip_RunTemplate">Chạy mẫu AI với clip đang chọn qua biến {{clip}}</sys:String>
+    <sys:String x:Key="Tip_Settings_AutoStart">Tự động khởi chạy SmartClipVault cùng Windows</sys:String>
+    <sys:String x:Key="Tip_Settings_StartHidden">Khởi động ẩn dưới khay hệ thống thay vì mở cửa sổ chính</sys:String>
+    <sys:String x:Key="Tip_Settings_DoubleClickTray">Nhấp đúp biểu tượng khay để ẩn/hiện cửa sổ chính</sys:String>
+    <sys:String x:Key="Tip_Settings_CaptureHistory">Bật hoặc tạm dừng tự động lưu lịch sử clipboard</sys:String>
+    <sys:String x:Key="Tip_Settings_AutoStar">Tự động gắn sao khi copy trùng 2 lần trong vòng 1 giây</sys:String>
+    <sys:String x:Key="Tip_Settings_ExcludedApps">Tên tiến trình (mỗi dòng 1 tên, vd: 1Password) sẽ không bị ghi lại</sys:String>
+    <sys:String x:Key="Tip_Settings_AutoClearDays">Xóa clip chưa ghim/chưa gắn sao cũ hơn N ngày (0 = giữ mãi)</sys:String>
+    <sys:String x:Key="Tip_Settings_IncludeImages">Đưa các file ảnh PNG vào file sao lưu .zip</sys:String>
+    <sys:String x:Key="Tip_Settings_AutoBackup">Tự động tạo bản sao lưu an toàn trước khi khôi phục</sys:String>
+    <sys:String x:Key="Tip_Settings_PinLock">Đặt mã PIN 4–8 chữ số để khóa SmartClipVault bằng Ctrl+L</sys:String>
 </ResourceDictionary>

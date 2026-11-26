@@ -67,8 +67,24 @@ public partial class App : Application
             ApplyFontScale(loadedSettings.UiFontScale);
             _settingsService.SettingsChanged += OnSettingsChanged;
 
-            _databaseService = new DatabaseService();
+            string? customDbPath = null;
+            if (!string.IsNullOrWhiteSpace(loadedSettings.DataDirectory))
+            {
+                Directory.CreateDirectory(loadedSettings.DataDirectory);
+                customDbPath = Path.Combine(loadedSettings.DataDirectory, "smartclipvault.db");
+                var defaultDir = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "SmartClipVault");
+                var defaultDb = Path.Combine(defaultDir, "smartclipvault.db");
+                if (!File.Exists(customDbPath) && File.Exists(defaultDb))
+                    File.Copy(defaultDb, customDbPath, overwrite: false);
+            }
+
+            _databaseService = customDbPath is not null
+                ? new DatabaseService(customDbPath)
+                : new DatabaseService();
             _databaseService.Initialize();
+            _databaseService.ClipsDeleted += OnDatabaseClipsDeleted;
             _backupService = new BackupService(_databaseService);
             _localizationService.LanguageChanged += OnLanguageChanged;
 
@@ -160,7 +176,7 @@ public partial class App : Application
                 var id = _databaseService.InsertClip(item);
                 item.Id = id;
 
-                if (item.ContentType == ClipContentType.Image)
+                if (item.ContentType == ClipContentType.Image && (_settingsService?.Current.EnableOcr ?? true))
                     _ocrService?.Enqueue(item);
 
                 if (item.IsStarred)
@@ -186,6 +202,21 @@ public partial class App : Application
                     mainWin.StarClipById(clipId);
             });
         }
+    }
+
+    private static Icon LoadTrayIcon()
+    {
+        try
+        {
+            var exePath = Environment.ProcessPath;
+            if (!string.IsNullOrEmpty(exePath) && File.Exists(exePath))
+                return System.Drawing.Icon.ExtractAssociatedIcon(exePath) ?? SystemIcons.Application;
+        }
+        catch (Exception ex)
+        {
+            Trace.TraceWarning($"Failed to extract app icon for tray: {ex.Message}");
+        }
+        return SystemIcons.Application;
     }
 
     private void InitializeTrayIcon()
@@ -241,10 +272,21 @@ public partial class App : Application
         _trayIcon = new TaskbarIcon
         {
             ToolTipText = "SmartClipVault",
-            Icon = SystemIcons.Application,
+            Icon = LoadTrayIcon(),
             ContextMenu = contextMenu
         };
         _trayIcon.TrayMouseDoubleClick += OnTrayMouseDoubleClick;
+    }
+
+    private readonly Queue<ClipItem> _sequentialQueue = new();
+
+    public void EnqueueSequentialClip(ClipItem clip)
+    {
+        if (clip is null || clip.IsSensitive)
+            return;
+        _sequentialQueue.Enqueue(clip);
+        if (!string.IsNullOrEmpty(clip.TextContent))
+            PasteHelper.TrySetClipboardText(clip.TextContent);
     }
 
     public bool IsLocked { get; private set; }
@@ -631,7 +673,7 @@ public partial class App : Application
         }
     }
 
-    private void ShowMainWindow()
+    internal void ShowMainWindow()
     {
         if (MainWindow is not SmartClipVault.MainWindow)
         {
@@ -670,6 +712,9 @@ public partial class App : Application
             }
         }
     }
+
+    private void OnDatabaseClipsDeleted(object? sender, EventArgs e)
+        => _clipboardMonitor?.ResetDeduplicationState();
 
     private void OnSensitiveClipCleanupTick(object? state)
     {
@@ -764,6 +809,12 @@ public partial class App : Application
 
         _ocrService?.Dispose();
         _ocrService = null;
+
+        if (_databaseService is not null)
+            _databaseService.ClipsDeleted -= OnDatabaseClipsDeleted;
+
+        _backupService?.Dispose();
+        _backupService = null;
 
         if (_sensitiveClipCleanupTimer is not null)
         {
@@ -876,7 +927,7 @@ public partial class App : Application
         }
     }
 
-    private async Task CheckForUpdatesAsync()
+    internal async Task CheckForUpdatesAsync()
     {
         if (Volatile.Read(ref _cleanedUp) != 0)
             return;

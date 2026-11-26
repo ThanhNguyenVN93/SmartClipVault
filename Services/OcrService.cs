@@ -13,8 +13,12 @@ namespace SmartClipVault.Services;
 
 public sealed class OcrService : IDisposable
 {
+    private const uint MaxImageDimension = 16384;
+    private const ulong MaxImagePixels = 64_000_000;
+
     private readonly DatabaseService _databaseService;
-    private readonly string? _allowedImageDirectoryPrefix;
+    private readonly string? _allowedImageDirectory;
+    private readonly string? _normalizedAllowedDirNoSlash;
     private readonly Channel<ClipItem> _queue;
     private readonly CancellationTokenSource _cts = new();
     private readonly Task _workerTask;
@@ -27,9 +31,9 @@ public sealed class OcrService : IDisposable
 
         if (!string.IsNullOrWhiteSpace(allowedImageDirectory))
         {
-            var fullDir = Path.GetFullPath(allowedImageDirectory)
+            _allowedImageDirectory = allowedImageDirectory;
+            _normalizedAllowedDirNoSlash = Path.GetFullPath(allowedImageDirectory)
                 .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-            _allowedImageDirectoryPrefix = fullDir + Path.DirectorySeparatorChar;
         }
 
         _queue = Channel.CreateBounded<ClipItem>(new BoundedChannelOptions(256)
@@ -54,17 +58,16 @@ public sealed class OcrService : IDisposable
 
     private async Task ProcessQueueAsync()
     {
-        var engine = OcrEngine.TryCreateFromUserProfileLanguages();
-        if (engine is null)
-        {
-            Trace.TraceWarning("OcrService: no OCR engine available for user profile languages.");
-            _queue.Writer.TryComplete();
-            return;
-        }
-
-        var token = _cts.Token;
         try
         {
+            var token = _cts.Token;
+            var engine = OcrEngine.TryCreateFromUserProfileLanguages();
+            if (engine is null)
+            {
+                Trace.TraceWarning("OcrService: no OCR engine available for user profile languages.");
+                return;
+            }
+
             await foreach (var item in _queue.Reader.ReadAllAsync(token).ConfigureAwait(false))
             {
                 if (!TryGetValidatedImagePath(item.ImagePath, out var validatedPath))
@@ -74,7 +77,13 @@ public sealed class OcrService : IDisposable
                 {
                     var ocrText = await ExtractOcrTextAsync(engine, validatedPath, token).ConfigureAwait(false);
                     if (!token.IsCancellationRequested && !string.IsNullOrWhiteSpace(ocrText))
-                        _databaseService.UpdateOcrText(item.Id, ocrText);
+                    {
+                        var isSensitive = SecretDetector.IsSensitive(ocrText);
+                        if (isSensitive)
+                            item.IsSensitive = true;
+
+                        _databaseService.UpdateOcrText(item.Id, ocrText, isSensitive);
+                    }
                 }
                 catch (OperationCanceledException) when (token.IsCancellationRequested)
                 {
@@ -92,6 +101,14 @@ public sealed class OcrService : IDisposable
         catch (ObjectDisposedException)
         {
         }
+        catch (Exception ex)
+        {
+            Trace.TraceError($"OcrService: worker loop failed: {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            _queue.Writer.TryComplete();
+        }
     }
 
     private bool TryGetValidatedImagePath(string? imagePath, out string fullPath)
@@ -102,12 +119,38 @@ public sealed class OcrService : IDisposable
 
         try
         {
-            var candidate = Path.GetFullPath(imagePath);
-            if (candidate.StartsWith(@"\\", StringComparison.Ordinal))
-                return false;
+            string candidate;
+            if (_allowedImageDirectory is not null && _normalizedAllowedDirNoSlash is not null)
+            {
+                if (!PasteHelper.TryNormalizeContainedImagePath(imagePath, out candidate, _allowedImageDirectory))
+                    return false;
 
-            if (_allowedImageDirectoryPrefix is not null &&
-                !candidate.StartsWith(_allowedImageDirectoryPrefix, StringComparison.OrdinalIgnoreCase))
+                var baseDirInfo = new DirectoryInfo(_normalizedAllowedDirNoSlash);
+                if (baseDirInfo.Exists && (baseDirInfo.Attributes & FileAttributes.ReparsePoint) != 0)
+                    return false;
+
+                if (PasteHelper.HasReparsePointSubdirectory(candidate, _normalizedAllowedDirNoSlash))
+                    return false;
+            }
+            else
+            {
+                var root = Path.GetPathRoot(imagePath);
+                if (string.IsNullOrEmpty(root) ||
+                    !PasteHelper.TryNormalizeContainedImagePath(imagePath, out candidate, root))
+                {
+                    return false;
+                }
+
+                var normalizedRootNoSlash = Path.GetFullPath(root)
+                    .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                if (PasteHelper.HasReparsePointSubdirectory(candidate, normalizedRootNoSlash))
+                    return false;
+            }
+
+            var fileInfo = new FileInfo(candidate);
+            if (fileInfo.Exists &&
+                ((fileInfo.Attributes & FileAttributes.Directory) != 0 ||
+                 (fileInfo.Attributes & FileAttributes.ReparsePoint) != 0))
             {
                 return false;
             }
@@ -115,7 +158,7 @@ public sealed class OcrService : IDisposable
             fullPath = candidate;
             return true;
         }
-        catch (Exception)
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException or IOException or UnauthorizedAccessException)
         {
             return false;
         }
@@ -123,8 +166,13 @@ public sealed class OcrService : IDisposable
 
     private static async Task<string> ExtractOcrTextAsync(OcrEngine engine, string imagePath, CancellationToken cancellationToken)
     {
-        if (!File.Exists(imagePath))
+        var fileInfo = new FileInfo(imagePath);
+        if (!fileInfo.Exists ||
+            (fileInfo.Attributes & FileAttributes.Directory) != 0 ||
+            (fileInfo.Attributes & FileAttributes.ReparsePoint) != 0)
+        {
             return string.Empty;
+        }
 
         using var fileStream = new FileStream(
             imagePath,
@@ -134,7 +182,16 @@ public sealed class OcrService : IDisposable
         using var stream = fileStream.AsRandomAccessStream();
 
         var decoder = await BitmapDecoder.CreateAsync(stream).AsTask(cancellationToken).ConfigureAwait(false);
-        var transform = CreateScaledTransformIfNeeded(decoder.PixelWidth, decoder.PixelHeight);
+        var pixelWidth = decoder.PixelWidth;
+        var pixelHeight = decoder.PixelHeight;
+        if (pixelWidth == 0 || pixelHeight == 0 ||
+            pixelWidth > MaxImageDimension || pixelHeight > MaxImageDimension ||
+            (ulong)pixelWidth * pixelHeight > MaxImagePixels)
+        {
+            return string.Empty;
+        }
+
+        var transform = CreateScaledTransformIfNeeded(pixelWidth, pixelHeight);
 
         using var bitmap = await decoder.GetSoftwareBitmapAsync(
             BitmapPixelFormat.Bgra8,
@@ -151,7 +208,7 @@ public sealed class OcrService : IDisposable
     {
         var transform = new BitmapTransform();
         var maxDim = OcrEngine.MaxImageDimension;
-        if (maxDim == 0 || (width <= maxDim && height <= maxDim))
+        if (width == 0 || height == 0 || maxDim == 0 || (width <= maxDim && height <= maxDim))
             return transform;
 
         var scale = Math.Min((double)maxDim / width, (double)maxDim / height);

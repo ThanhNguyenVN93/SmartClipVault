@@ -105,24 +105,33 @@
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
         <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="*"/>
-            <ColumnDefinition Width="4"/>
-            <ColumnDefinition Width="320"/>
+            <ColumnDefinition x:Name="LeftCol" Width="*"/>
+            <ColumnDefinition x:Name="SplitterCol" Width="4"/>
+            <ColumnDefinition x:Name="RightCol" Width="320"/>
         </Grid.ColumnDefinitions>
 
         <!-- Top bar: Backup / Restore / Language -->
         <Border Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="3"
                 Background="#252526" Padding="8,5" BorderBrush="#3A3A3A" BorderThickness="0,0,0,1">
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button x:Name="AlwaysOnTopButton" Content="Pin Top" Style="{StaticResource DarkButton}"
+                        ToolTip="Always on Top" Margin="0,0,6,0" Click="OnAlwaysOnTopClick"/>
+                <Button x:Name="PanelModeButton" Content="Panels: Both" Style="{StaticResource DarkButton}"
+                        ToolTip="Switch panel layout (Both / History / Boards)" Margin="0,0,12,0" Click="OnPanelModeClick"/>
                 <Button x:Name="SettingsButton" Content="{DynamicResource Btn_Settings}" Style="{StaticResource DarkButton}"
+                        ToolTip="{DynamicResource Tip_Settings}"
                         Margin="0,0,12,0" Click="OnSettingsClick"/>
                 <Button x:Name="BackupButton" Content="{DynamicResource Btn_Backup}" Style="{StaticResource DarkButton}"
+                        ToolTip="{DynamicResource Tip_Backup}"
                         Margin="0,0,4,0" Click="OnBackupClick"/>
                 <Button x:Name="RestoreButton" Content="{DynamicResource Btn_Restore}" Style="{StaticResource DarkButton}"
+                        ToolTip="{DynamicResource Tip_Restore}"
                         Margin="0,0,12,0" Click="OnRestoreClick"/>
                 <Button Content="{DynamicResource Btn_LangEN}" Style="{StaticResource DarkButton}"
+                        ToolTip="{DynamicResource Tip_LangEN}"
                         Margin="0,0,2,0" Click="OnLangEnClick"/>
                 <Button Content="{DynamicResource Btn_LangVI}" Style="{StaticResource DarkButton}"
+                        ToolTip="{DynamicResource Tip_LangVI}"
                         Click="OnLangViClick"/>
             </StackPanel>
         </Border>
@@ -158,28 +167,41 @@
             <Border DockPanel.Dock="Top" Background="#202022" Padding="8,4" BorderBrush="#3A3A3A" BorderThickness="0,0,0,1">
                 <StackPanel Orientation="Horizontal">
                     <Button x:Name="FilterAllButton" Content="{DynamicResource Filter_All}" Style="{StaticResource DarkButton}"
+                            ToolTip="{DynamicResource Tip_FilterAll}"
                             Margin="0,0,4,0" Padding="8,3" FontSize="{DynamicResource FontSize11}" Background="#264F78"
                             Click="OnFilterAllClick"/>
                     <Button x:Name="FilterTextButton" Content="{DynamicResource Filter_Text}" Style="{StaticResource DarkButton}"
+                            ToolTip="{DynamicResource Tip_FilterText}"
                             Margin="0,0,4,0" Padding="8,3" FontSize="{DynamicResource FontSize11}" Background="#2D2D30"
                             Click="OnFilterTextClick"/>
                     <Button x:Name="FilterImagesButton" Content="{DynamicResource Filter_Images}" Style="{StaticResource DarkButton}"
+                            ToolTip="{DynamicResource Tip_FilterImages}"
                             Padding="8,3" FontSize="{DynamicResource FontSize11}" Background="#2D2D30"
                             Click="OnFilterImagesClick"/>
+                    <Button x:Name="SeqPasteQueueButton" Content="{DynamicResource Btn_SeqQueue}" Style="{StaticResource DarkButton}"
+                            ToolTip="{DynamicResource Tip_SeqQueue}"
+                            Margin="8,0,0,0" Padding="8,3" FontSize="{DynamicResource FontSize11}"
+                            Click="OnSeqQueueAddClick"/>
                 </StackPanel>
             </Border>
-            <ListBox x:Name="ClipListBox"
-                     Background="Transparent"
-                     BorderThickness="0"
-                     ItemContainerStyle="{StaticResource ClipItemStyle}"
-                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                     VirtualizingPanel.IsVirtualizing="True"
-                     VirtualizingPanel.VirtualizationMode="Recycling"
-                     MouseDoubleClick="OnClipDoubleClick"
-                     SelectionChanged="OnClipSelectionChanged">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <ListBox x:Name="ClipListBox" Grid.Column="0"
+                         SelectionMode="Extended"
+                         Background="Transparent"
+                         BorderThickness="0"
+                         ItemContainerStyle="{StaticResource ClipItemStyle}"
+                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                         VirtualizingPanel.IsVirtualizing="True"
+                         VirtualizingPanel.VirtualizationMode="Recycling"
+                         MouseDoubleClick="OnClipDoubleClick"
+                         SelectionChanged="OnClipSelectionChanged">
                 <ListBox.ContextMenu>
                     <ContextMenu Opened="OnClipContextMenuOpened">
-                        <MenuItem Header="{DynamicResource Menu_SpecialOps}">
+                        <MenuItem x:Name="CtxSpecialOps" Header="{DynamicResource Menu_SpecialOps}">
                             <MenuItem Header="{DynamicResource Transform_UpperCase}" Click="OnTransformClick" Tag="UpperCase"/>
                             <MenuItem Header="{DynamicResource Transform_LowerCase}" Click="OnTransformClick" Tag="LowerCase"/>
                             <MenuItem Header="{DynamicResource Transform_CamelCase}" Click="OnTransformClick" Tag="CamelCase"/>
@@ -196,6 +218,28 @@
                             <Separator/>
                             <MenuItem Header="{DynamicResource Transform_TrimDedupe}" Click="OnTransformClick" Tag="TrimDedupe"/>
                         </MenuItem>
+                        <MenuItem x:Name="CtxEditText" Header="{DynamicResource Menu_EditText}" Click="OnEditClipTextClick"/>
+                        <MenuItem x:Name="CtxPasteAsPlain" Header="{DynamicResource Menu_PasteAsPlainText}" Click="OnPasteAsPlainTextClick"/>
+                        <MenuItem x:Name="CtxOpenUrl" Header="{DynamicResource Menu_OpenUrl}" Click="OnOpenUrlClick" Visibility="Collapsed"/>
+                        <MenuItem x:Name="CtxFormatJson" Header="{DynamicResource Menu_FormatJson}" Click="OnFormatJsonClick" Visibility="Collapsed"/>
+                        <MenuItem x:Name="CtxShowQr" Header="Show QR Code" Click="OnShowQrCodeClick"/>
+                        <Separator/>
+                        <MenuItem Header="Multi Select (Alt+S)" Click="OnMultiSelectClick"/>
+                        <MenuItem Header="Deselect All (Alt+D)" Click="OnDeselectAllClick"/>
+                        <Separator/>
+                        <MenuItem Header="{DynamicResource Menu_Delete}" Click="OnDeleteClipClick"/>
+                        <MenuItem Header="Clear History...">
+                            <MenuItem Header="Last Hour" Click="OnClearHistoryRangeClick" Tag="1h"/>
+                            <MenuItem Header="Last 2 Hours" Click="OnClearHistoryRangeClick" Tag="2h"/>
+                            <Separator/>
+                            <MenuItem Header="Last Day" Click="OnClearHistoryRangeClick" Tag="1d"/>
+                            <MenuItem Header="Last 3 Days" Click="OnClearHistoryRangeClick" Tag="3d"/>
+                            <MenuItem Header="Last 7 Days" Click="OnClearHistoryRangeClick" Tag="7d"/>
+                            <Separator/>
+                            <MenuItem Header="Last 30 Days" Click="OnClearHistoryRangeClick" Tag="30d"/>
+                            <Separator/>
+                            <MenuItem Header="Clear All History" Click="OnClearHistoryRangeClick" Tag="all"/>
+                        </MenuItem>
                     </ContextMenu>
                 </ListBox.ContextMenu>
                 <ListBox.ItemTemplate>
@@ -207,31 +251,84 @@
                                 <ColumnDefinition Width="Auto"/>
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
-                            <Border Grid.Column="0" Width="44" Height="44" Margin="0,0,8,0"
+                            <Border Grid.Column="0" Width="52" Height="52" Margin="0,0,8,0"
                                     CornerRadius="3" Background="#2D2D30" ClipToBounds="True"
                                     Visibility="{Binding ThumbnailVisibility}">
+                                <Border.ToolTip>
+                                    <ToolTip Background="#252526" BorderBrush="#555" Padding="6">
+                                        <StackPanel MaxWidth="360">
+                                            <Image Source="{Binding Thumbnail}" MaxWidth="348" MaxHeight="260"
+                                                   Stretch="Uniform" RenderOptions.BitmapScalingMode="HighQuality"/>
+                                            <TextBlock Text="{Binding Preview}" Foreground="#D4D4D4" TextWrapping="Wrap"
+                                                       Margin="0,6,0,0" FontSize="11"/>
+                                        </StackPanel>
+                                    </ToolTip>
+                                </Border.ToolTip>
                                 <Image Source="{Binding Thumbnail}" Stretch="UniformToFill"
                                        RenderOptions.BitmapScalingMode="HighQuality"/>
                             </Border>
                             <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                                <TextBlock Text="{Binding Preview}" FontSize="{DynamicResource FontSize12}"
-                                           Foreground="{Binding PreviewColor}"
-                                           TextTrimming="CharacterEllipsis"
-                                           ToolTip="{Binding Preview}"/>
-                                <TextBlock Text="{Binding TypeLabel}" FontSize="{DynamicResource FontSize10}" Foreground="#808080"/>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Border Grid.Column="0" Width="14" Height="14" CornerRadius="2"
+                                            Margin="0,0,6,0" VerticalAlignment="Center"
+                                            Background="{Binding SwatchBrush}"
+                                            Visibility="{Binding SwatchVisibility}"
+                                            BorderBrush="#555" BorderThickness="1"/>
+                                    <TextBlock Grid.Column="1" Text="{Binding Preview}" FontSize="{DynamicResource FontSize12}"
+                                               Foreground="{Binding PreviewColor}"
+                                               TextTrimming="CharacterEllipsis"
+                                               ToolTip="{Binding Preview}"/>
+                                </Grid>
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="{Binding TypeLabel}" FontSize="{DynamicResource FontSize10}" Foreground="#808080"/>
+                                    <TextBlock Text="{Binding SourceApp}" FontSize="{DynamicResource FontSize10}" Foreground="#606060"
+                                               Margin="6,0,0,0" Visibility="{Binding SourceAppVisibility}"/>
+                                </StackPanel>
                             </StackPanel>
                             <Button Grid.Column="2" Content="{DynamicResource Clip_Copy}" Style="{StaticResource DarkButton}"
+                                    ToolTip="{DynamicResource Tip_ClipCopy}"
                                     Margin="4,0,2,0" FontSize="{DynamicResource FontSize10}" VerticalAlignment="Center"
                                     Tag="{Binding}"
                                     Click="OnCopyClipClick"/>
                             <Button Grid.Column="3" Content="{DynamicResource Clip_Pin}" Style="{StaticResource DarkButton}"
+                                    ToolTip="{DynamicResource Tip_ClipPin}"
                                     Margin="2,0,0,0" FontSize="{DynamicResource FontSize10}" VerticalAlignment="Center"
                                     Tag="{Binding}"
                                     Click="OnPinClipClick"/>
                         </Grid>
                     </DataTemplate>
                 </ListBox.ItemTemplate>
-            </ListBox>
+                </ListBox>
+                <Border x:Name="PreviewPaneBorder" Grid.Column="1" Width="280" Background="#252526"
+                        BorderBrush="#3A3A3A" BorderThickness="1,0,0,0" Padding="10,8" Visibility="Collapsed">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <StackPanel>
+                            <StackPanel x:Name="PreviewActionBar" Orientation="Horizontal" Margin="0,0,0,6">
+                                <Button x:Name="OpenUrlButton" Content="{DynamicResource Action_OpenUrl}"
+                                        Style="{StaticResource DarkButton}"
+                                        FontSize="{DynamicResource FontSize11}" Margin="0,0,4,0"
+                                        Visibility="Collapsed" Click="OnOpenUrlClick"/>
+                                <Button x:Name="FormatJsonButton" Content="{DynamicResource Action_FormatJson}"
+                                        Style="{StaticResource DarkButton}"
+                                        FontSize="{DynamicResource FontSize11}"
+                                        Visibility="Collapsed" Click="OnFormatJsonClick"/>
+                            </StackPanel>
+                            <Image x:Name="PreviewPaneImage" MaxHeight="260" Stretch="Uniform"
+                                   RenderOptions.BitmapScalingMode="HighQuality"
+                                   Margin="0,0,0,8" Visibility="Collapsed"/>
+                            <TextBox x:Name="PreviewPaneText" IsReadOnly="True" TextWrapping="Wrap"
+                                     VerticalScrollBarVisibility="Auto"
+                                     Background="#1E1E1E" Foreground="#D4D4D4" BorderBrush="#3A3A3A"
+                                     BorderThickness="1" Padding="6,4" FontSize="{DynamicResource FontSize12}"
+                                     Visibility="Collapsed"/>
+                        </StackPanel>
+                    </ScrollViewer>
+                </Border>
+            </Grid>
         </DockPanel>
 
         <GridSplitter Grid.Row="1" Grid.Column="1" Width="4" Background="#3A3A3A" HorizontalAlignment="Stretch"/>
@@ -240,6 +337,7 @@
         <Grid x:Name="LockOverlay" Grid.Row="0" Grid.RowSpan="2" Grid.Column="0" Grid.ColumnSpan="3"
               Background="#1E1E1E" Visibility="Collapsed" Panel.ZIndex="100"
               KeyboardNavigation.TabNavigation="Cycle"
+              KeyboardNavigation.ControlTabNavigation="Cycle"
               KeyboardNavigation.DirectionalNavigation="Cycle">
             <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Width="260">
                 <TextBlock Text="&#x1F512;" FontSize="40" HorizontalAlignment="Center"
@@ -301,6 +399,12 @@
                      ItemContainerStyle="{StaticResource ClipItemStyle}"
                      ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                      MouseDoubleClick="OnPinnedClipDoubleClick">
+                <ListBox.ContextMenu>
+                    <ContextMenu>
+                        <MenuItem Header="{DynamicResource Menu_Unpin}" Click="OnUnpinClipClick"/>
+                        <MenuItem Header="{DynamicResource Menu_Delete}" Click="OnDeletePinnedClipClick"/>
+                    </ContextMenu>
+                </ListBox.ContextMenu>
                 <ListBox.ItemTemplate>
                     <DataTemplate>
                         <TextBlock Text="{Binding Preview}" FontSize="{DynamicResource FontSize12}"
