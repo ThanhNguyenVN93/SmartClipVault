@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Diagnostics;
 using System.Drawing;
+using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
 using System.Windows;
@@ -19,9 +20,12 @@ public partial class App : Application
     private MenuItem? _exitMenuItem;
     private DatabaseService? _databaseService;
     private ClipboardMonitorService? _clipboardMonitor;
+    private OcrService? _ocrService;
     private Channel<ClipItem>? _clipQueue;
     private Task? _clipWriterTask;
-    private bool _cleanedUp;
+    private Timer? _sensitiveClipCleanupTimer;
+    private int _sensitiveCleanupRunning;
+    private int _cleanedUp;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -40,9 +44,17 @@ public partial class App : Application
             });
             _clipWriterTask = Task.Run(ProcessClipQueueAsync);
 
+            _ocrService = new OcrService(_databaseService, ClipboardMonitorService.ImageDirectory);
+
             _clipboardMonitor = new ClipboardMonitorService();
             _clipboardMonitor.ClipCaptured += OnClipCaptured;
             _clipboardMonitor.Start();
+
+            _sensitiveClipCleanupTimer = new Timer(
+                OnSensitiveClipCleanupTick,
+                null,
+                TimeSpan.FromSeconds(60),
+                TimeSpan.FromSeconds(60));
 
             InitializeTrayIcon();
         }
@@ -67,7 +79,14 @@ public partial class App : Application
         {
             try
             {
-                _databaseService.InsertClip(item);
+                if (item.ContentType == ClipContentType.Text && SecretDetector.IsSensitive(item.TextContent))
+                    item.IsSensitive = true;
+
+                var id = _databaseService.InsertClip(item);
+                item.Id = id;
+
+                if (item.ContentType == ClipContentType.Image)
+                    _ocrService?.Enqueue(item);
             }
             catch (Exception ex)
             {
@@ -134,12 +153,35 @@ public partial class App : Application
         }
     }
 
-    private void CleanupResources()
+    private void OnSensitiveClipCleanupTick(object? state)
     {
-        if (_cleanedUp)
+        if (Volatile.Read(ref _cleanedUp) != 0)
             return;
 
-        _cleanedUp = true;
+        if (Interlocked.CompareExchange(ref _sensitiveCleanupRunning, 1, 0) != 0)
+            return;
+
+        try
+        {
+            if (Volatile.Read(ref _cleanedUp) == 0)
+            {
+                _databaseService?.DeleteExpiredSensitiveClips(TimeSpan.FromSeconds(60));
+            }
+        }
+        catch (Exception ex)
+        {
+            Trace.TraceError($"Failed to delete expired sensitive clips: {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            Volatile.Write(ref _sensitiveCleanupRunning, 0);
+        }
+    }
+
+    private void CleanupResources()
+    {
+        if (Interlocked.Exchange(ref _cleanedUp, 1) != 0)
+            return;
 
         if (_clipboardMonitor is not null)
         {
@@ -164,6 +206,27 @@ public partial class App : Application
         }
 
         _clipQueue = null;
+
+        _ocrService?.Dispose();
+        _ocrService = null;
+
+        if (_sensitiveClipCleanupTimer is not null)
+        {
+            try
+            {
+                _sensitiveClipCleanupTimer.Change(Timeout.Infinite, Timeout.Infinite);
+                using var timerStopped = new ManualResetEvent(false);
+                if (_sensitiveClipCleanupTimer.Dispose(timerStopped))
+                {
+                    timerStopped.WaitOne(TimeSpan.FromSeconds(2));
+                }
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+
+            _sensitiveClipCleanupTimer = null;
+        }
 
         if (_showMenuItem is not null)
         {

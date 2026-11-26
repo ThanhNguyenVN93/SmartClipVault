@@ -51,7 +51,7 @@ public class DatabaseService
         connection.Open();
 
         using var pragma = connection.CreateCommand();
-        pragma.CommandText = "PRAGMA busy_timeout = 5000;";
+        pragma.CommandText = "PRAGMA busy_timeout = 5000; PRAGMA secure_delete = ON;";
         pragma.ExecuteNonQuery();
 
         return connection;
@@ -114,6 +114,41 @@ public class DatabaseService
 
             var result = command.ExecuteScalar();
             return result is long id ? id : Convert.ToInt64(result);
+        }
+    }
+
+    public void UpdateOcrText(long id, string ocrText)
+    {
+        ArgumentNullException.ThrowIfNull(ocrText);
+        if (id <= 0)
+            return;
+
+        lock (_syncLock)
+        {
+            using var connection = OpenConnection();
+            using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE clips SET OcrText = $ocrText WHERE Id = $id;";
+            command.Parameters.AddWithValue("$ocrText", ocrText);
+            command.Parameters.AddWithValue("$id", id);
+            command.ExecuteNonQuery();
+        }
+    }
+
+    public void DeleteExpiredSensitiveClips(TimeSpan maxAge)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxAge, TimeSpan.Zero);
+        if (maxAge >= DateTime.UtcNow - DateTime.MinValue)
+            return;
+
+        var cutoff = DateTime.UtcNow - maxAge;
+
+        lock (_syncLock)
+        {
+            using var connection = OpenConnection();
+            using var command = connection.CreateCommand();
+            command.CommandText = "DELETE FROM clips WHERE IsSensitive = 1 AND CreatedAt < $cutoff;";
+            command.Parameters.AddWithValue("$cutoff", cutoff.ToString("O"));
+            command.ExecuteNonQuery();
         }
     }
 }
