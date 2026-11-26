@@ -11,7 +11,8 @@
         Width="420"
         Background="#1E1E1E"
         BorderBrush="#3A3A3A"
-        BorderThickness="1">
+        BorderThickness="1"
+        FontSize="{DynamicResource FontSizeBase}">
     <Window.Resources>
         <Style x:Key="ClipRowStyle" TargetType="ListBoxItem">
             <Setter Property="Foreground" Value="#D4D4D4"/>
@@ -40,12 +41,12 @@
     <StackPanel>
         <Border Background="#252526" Padding="8,6" BorderBrush="#3A3A3A" BorderThickness="0,0,0,1">
             <TextBlock Text="Quick Paste  —  1-9 to paste · Esc to close"
-                       Foreground="#808080" FontSize="11" FontFamily="Segoe UI"/>
+                       Foreground="#808080" FontSize="{DynamicResource FontSize11}" FontFamily="Segoe UI"/>
         </Border>
         <TextBlock x:Name="EmptyText"
                    Text="No clips available"
                    Foreground="#808080"
-                   FontSize="12"
+                   FontSize="{DynamicResource FontSize12}"
                    Padding="10,12"
                    Visibility="Collapsed"/>
         <ListBox x:Name="ClipList"
@@ -60,13 +61,14 @@
                 <DataTemplate>
                     <Grid>
                         <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="22"/>
+                            <ColumnDefinition Width="Auto" MinWidth="22"/>
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
                         <TextBlock Grid.Column="0" Text="{Binding Index}" Foreground="#569CD6"
-                                   FontSize="12" FontWeight="Bold" VerticalAlignment="Center"/>
+                                   Margin="0,0,6,0"
+                                   FontSize="{DynamicResource FontSize12}" FontWeight="Bold" VerticalAlignment="Center"/>
                         <TextBlock Grid.Column="1" Text="{Binding Preview}" Foreground="#D4D4D4"
-                                   FontSize="12" TextTrimming="CharacterEllipsis"
+                                   FontSize="{DynamicResource FontSize12}" TextTrimming="CharacterEllipsis"
                                    VerticalAlignment="Center" ToolTip="{Binding Preview}"/>
                     </Grid>
                 </DataTemplate>

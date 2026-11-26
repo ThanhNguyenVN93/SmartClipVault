@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Linq;
 using System.Text.RegularExpressions;
@@ -18,17 +19,70 @@ namespace SmartClipVault;
 public partial class MainWindow : Window
 {
     private const int SearchDebounceMs = 150;
+    private const int MaxThumbnailCacheEntries = 150;
+    private const int MaxConcurrentThumbnailLoads = 4;
 
-    private record ClipRow(string Preview, string TypeLabel, string PreviewColor, ClipItem Clip);
+    private enum ClipFilterMode { All, Text, Images }
+
+    private sealed class ClipRow : INotifyPropertyChanged
+    {
+        private ImageSource? _thumbnail;
+
+        public ClipRow(string preview, string typeLabel, string previewColor, ClipItem clip, ImageSource? thumbnail = null)
+        {
+            Preview = preview;
+            TypeLabel = typeLabel;
+            PreviewColor = previewColor;
+            Clip = clip;
+            _thumbnail = thumbnail;
+        }
+
+        public string Preview { get; }
+        public string TypeLabel { get; }
+        public string PreviewColor { get; }
+        public ClipItem Clip { get; }
+
+        public ImageSource? Thumbnail
+        {
+            get => _thumbnail;
+            set
+            {
+                if (ReferenceEquals(_thumbnail, value))
+                    return;
+
+                _thumbnail = value;
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Thumbnail)));
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ThumbnailVisibility)));
+            }
+        }
+
+        public Visibility ThumbnailVisibility => _thumbnail is not null ? Visibility.Visible : Visibility.Collapsed;
+
+        public event PropertyChangedEventHandler? PropertyChanged;
+    }
+
+    private static readonly SolidColorBrush ActiveFilterBrush = CreateFrozenBrush(0x26, 0x4F, 0x78);
+    private static readonly SolidColorBrush InactiveFilterBrush = CreateFrozenBrush(0x2D, 0x2D, 0x30);
 
     private static readonly Regex ClipPlaceholderRegex =
         new(@"\{\{\s*clip\s*\}\}", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private DatabaseService? _db;
     private List<ClipItem> _clips = [];
+    private readonly Dictionary<string, ImageSource> _thumbnailCache = new(StringComparer.OrdinalIgnoreCase);
+    private ClipFilterMode _currentFilter = ClipFilterMode.All;
     private CancellationTokenSource _lifetimeCts = new();
     private CancellationTokenSource? _searchCts;
     private CancellationTokenSource? _pinnedCts;
+    private CancellationTokenSource? _thumbnailCts;
+    private bool _isClosed;
+
+    private static SolidColorBrush CreateFrozenBrush(byte r, byte g, byte b)
+    {
+        var brush = new SolidColorBrush(Color.FromRgb(r, g, b));
+        brush.Freeze();
+        return brush;
+    }
 
     public MainWindow()
     {
@@ -61,6 +115,8 @@ public partial class MainWindow : Window
 
     protected override void OnClosed(EventArgs e)
     {
+        _isClosed = true;
+
         if (Application.Current is App app)
             app.Localization.LanguageChanged -= OnLanguageChanged;
 
@@ -75,6 +131,11 @@ public partial class MainWindow : Window
         _pinnedCts?.Dispose();
         _pinnedCts = null;
 
+        _thumbnailCts?.Cancel();
+        _thumbnailCts?.Dispose();
+        _thumbnailCts = null;
+
+        _thumbnailCache.Clear();
         ClipListBox.ItemsSource = null;
         BoardListBox.ItemsSource = null;
         PinnedClipListBox.ItemsSource = null;
@@ -88,6 +149,7 @@ public partial class MainWindow : Window
     {
         try
         {
+            _thumbnailCache.Clear();
             var token = _lifetimeCts.Token;
             await LoadClipsInternalAsync(SearchBox.Text, token).ConfigureAwait(true);
             await RefreshBoardsAsync(selectBoardId: null, token).ConfigureAwait(true);
@@ -106,9 +168,15 @@ public partial class MainWindow : Window
         }
     }
 
+    public void RefreshClips()
+    {
+        if (!_isClosed)
+            _ = LoadClipsInternalAsync(SearchBox?.Text, CancellationToken.None);
+    }
+
     private async Task LoadClipsInternalAsync(string? search, CancellationToken cancellationToken)
     {
-        if (_db is null)
+        if (_isClosed || _db is null)
             return;
 
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token, cancellationToken);
@@ -117,20 +185,174 @@ public partial class MainWindow : Window
             return;
 
         _clips = clips;
-        ClipListBox.ItemsSource = _clips.Select(ToRow).ToList();
+        PruneThumbnailCache();
+        ApplyClipFilter();
     }
 
-    private static ClipRow ToRow(ClipItem clip)
+    private void OnFilterAllClick(object sender, RoutedEventArgs e) => SetFilter(ClipFilterMode.All);
+    private void OnFilterTextClick(object sender, RoutedEventArgs e) => SetFilter(ClipFilterMode.Text);
+    private void OnFilterImagesClick(object sender, RoutedEventArgs e) => SetFilter(ClipFilterMode.Images);
+
+    private void SetFilter(ClipFilterMode mode)
+    {
+        if (_currentFilter == mode)
+            return;
+
+        _currentFilter = mode;
+        FilterAllButton.Background = mode == ClipFilterMode.All ? ActiveFilterBrush : InactiveFilterBrush;
+        FilterTextButton.Background = mode == ClipFilterMode.Text ? ActiveFilterBrush : InactiveFilterBrush;
+        FilterImagesButton.Background = mode == ClipFilterMode.Images ? ActiveFilterBrush : InactiveFilterBrush;
+        ApplyClipFilter();
+    }
+
+    private void ApplyClipFilter()
+    {
+        _thumbnailCts?.Cancel();
+        _thumbnailCts?.Dispose();
+        _thumbnailCts = null;
+
+        IEnumerable<ClipItem> filtered = _currentFilter switch
+        {
+            ClipFilterMode.Text => _clips.Where(c => c.ContentType == ClipContentType.Text),
+            ClipFilterMode.Images => _clips.Where(c => c.ContentType == ClipContentType.Image),
+            _ => _clips
+        };
+
+        var rows = new List<ClipRow>();
+        var pendingThumbnails = new List<(ClipRow Row, string Path)>();
+
+        foreach (var clip in filtered)
+        {
+            ImageSource? cachedThumbnail = null;
+            string? normalizedImagePath = null;
+            if (clip.ContentType == ClipContentType.Image &&
+                PasteHelper.TryNormalizeContainedImagePath(clip.ImagePath, out normalizedImagePath))
+            {
+                _thumbnailCache.TryGetValue(normalizedImagePath, out cachedThumbnail);
+            }
+
+            var row = ToRow(clip, cachedThumbnail);
+            rows.Add(row);
+
+            if (cachedThumbnail is null && normalizedImagePath is not null)
+                pendingThumbnails.Add((row, normalizedImagePath));
+        }
+
+        ClipListBox.ItemsSource = rows;
+
+        if (pendingThumbnails.Count > 0 && !_lifetimeCts.IsCancellationRequested)
+        {
+            var cts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
+            _thumbnailCts = cts;
+            _ = LoadThumbnailsAsync(pendingThumbnails, cts.Token);
+        }
+    }
+
+    private async Task LoadThumbnailsAsync(List<(ClipRow Row, string Path)> pending, CancellationToken ct)
+    {
+        using var throttler = new SemaphoreSlim(MaxConcurrentThumbnailLoads, MaxConcurrentThumbnailLoads);
+        var tasks = new List<Task>(pending.Count);
+
+        foreach (var (row, path) in pending)
+        {
+            if (ct.IsCancellationRequested)
+                break;
+
+            tasks.Add(LoadSingleThumbnailAsync(row, path, throttler, ct));
+        }
+
+        try
+        {
+            await Task.WhenAll(tasks).ConfigureAwait(true);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            Trace.TraceError($"Unexpected error loading thumbnails: {ex}");
+        }
+    }
+
+    private async Task LoadSingleThumbnailAsync(
+        ClipRow row,
+        string normalizedPath,
+        SemaphoreSlim throttler,
+        CancellationToken ct)
+    {
+        var acquired = false;
+        try
+        {
+            await throttler.WaitAsync(ct).ConfigureAwait(true);
+            acquired = true;
+
+            if (ct.IsCancellationRequested)
+                return;
+
+            if (_thumbnailCache.TryGetValue(normalizedPath, out var cached))
+            {
+                row.Thumbnail = cached;
+                return;
+            }
+
+            var thumbnail = await PasteHelper.TryLoadThumbnailAsync(normalizedPath, cancellationToken: ct).ConfigureAwait(true);
+            if (!ct.IsCancellationRequested && thumbnail is not null)
+            {
+                _thumbnailCache[normalizedPath] = thumbnail;
+                row.Thumbnail = thumbnail;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            Trace.TraceWarning($"Failed to load thumbnail for '{normalizedPath}': {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            if (acquired)
+                throttler.Release();
+        }
+    }
+
+    private void PruneThumbnailCache()
+    {
+        if (_thumbnailCache.Count <= MaxThumbnailCacheEntries)
+            return;
+
+        var activePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var clip in _clips)
+        {
+            if (clip.ContentType == ClipContentType.Image &&
+                PasteHelper.TryNormalizeContainedImagePath(clip.ImagePath, out var path))
+            {
+                activePaths.Add(path);
+            }
+        }
+
+        foreach (var key in _thumbnailCache.Keys.ToList())
+        {
+            if (!activePaths.Contains(key))
+                _thumbnailCache.Remove(key);
+        }
+    }
+
+    private static ClipRow ToRow(ClipItem clip, ImageSource? thumbnail = null)
     {
         var preview = PasteHelper.FormatClipPreview(clip);
         var color = clip.IsSensitive ? "#CE9178" : "#D4D4D4";
         var typeLabel = clip.ContentType switch
         {
-            ClipContentType.Image => "Image",
-            ClipContentType.Files => "Files",
-            _ => clip.IsSensitive ? "Sensitive" : "Text"
+            ClipContentType.Image => TryGetResource("Type_Image") ?? "Image",
+            ClipContentType.Files => TryGetResource("Type_Files") ?? "Files",
+            _ => clip.IsSensitive
+                ? (TryGetResource("Type_Sensitive") ?? "Sensitive")
+                : (TryGetResource("Type_Text") ?? "Text")
         };
-        return new ClipRow(preview, typeLabel, color, clip);
+        if (clip.IsStarred)
+            typeLabel = $"★ {typeLabel}";
+        return new ClipRow(preview, typeLabel, color, clip, thumbnail);
     }
 
     private async Task RefreshBoardsAsync(long? selectBoardId = null, CancellationToken cancellationToken = default)
@@ -168,7 +390,7 @@ public partial class MainWindow : Window
             if (cts.Token.IsCancellationRequested)
                 return;
 
-            PinnedClipListBox.ItemsSource = clips.Select(ToRow).ToList();
+            PinnedClipListBox.ItemsSource = clips.Select(c => ToRow(c)).ToList();
         }
         catch (OperationCanceledException)
         {
@@ -263,7 +485,10 @@ public partial class MainWindow : Window
     }
 
     private void OnLanguageChanged(object? sender, string langCode)
-        => UpdatePinnedLabel();
+    {
+        UpdatePinnedLabel();
+        ApplyClipFilter();
+    }
 
     private void UpdatePinnedLabel()
     {
@@ -461,6 +686,35 @@ public partial class MainWindow : Window
     private static string? TryGetResource(string key)
         => Application.Current?.TryFindResource(key) as string;
 
+    private void OnSettingsClick(object sender, RoutedEventArgs e)
+    {
+        if (Application.Current is App app)
+            app.ShowSettingsWindow(this);
+    }
+
+    internal void StarClipById(long clipId)
+    {
+        if (_isClosed || clipId <= 0 || _lifetimeCts.IsCancellationRequested)
+            return;
+
+        _ = SafeRefreshClipsAsync();
+    }
+
+    private async Task SafeRefreshClipsAsync()
+    {
+        try
+        {
+            await RefreshClipsAsync(SearchBox.Text, _lifetimeCts.Token).ConfigureAwait(true);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            Trace.TraceError($"Failed to refresh clips after star: {ex}");
+        }
+    }
+
     private async void OnBackupClick(object sender, RoutedEventArgs e)
     {
         if (Application.Current is App app)
@@ -499,10 +753,17 @@ public partial class MainWindow : Window
         if (clip.IsSensitive)
             return;
 
-        if (clip.ContentType == ClipContentType.Image && !string.IsNullOrWhiteSpace(clip.ImagePath))
+        if (clip.ContentType == ClipContentType.Image &&
+            PasteHelper.TryNormalizeContainedImagePath(clip.ImagePath, out var normalizedPath))
         {
-            var img = await PasteHelper.TryLoadClipboardImageAsync(clip.ImagePath, _lifetimeCts.Token).ConfigureAwait(true);
-            PasteHelper.TrySetClipboardImage(img);
+            var img = await PasteHelper.TryLoadClipboardImageAsync(normalizedPath, _lifetimeCts.Token).ConfigureAwait(true);
+            if (img is not null && !_lifetimeCts.IsCancellationRequested)
+            {
+                var monitor = (Application.Current as App)?.ClipboardMonitor;
+                using var suppression = monitor?.SuppressSelfCopy();
+                if (PasteHelper.TrySetClipboardImage(img))
+                    suppression?.MarkSucceeded();
+            }
         }
         else if (!string.IsNullOrEmpty(clip.TextContent))
         {

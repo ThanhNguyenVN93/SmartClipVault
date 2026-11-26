@@ -3,10 +3,12 @@
                     xmlns:sys="clr-namespace:System;assembly=mscorlib">
     <!-- Tray menu -->
     <sys:String x:Key="Tray_Open">Open SmartClipVault</sys:String>
+    <sys:String x:Key="Tray_Settings">Settings…</sys:String>
     <sys:String x:Key="Tray_Backup">Backup…</sys:String>
     <sys:String x:Key="Tray_Restore">Restore…</sys:String>
     <sys:String x:Key="Tray_Language">Language</sys:String>
     <sys:String x:Key="Tray_Exit">Exit</sys:String>
+    <sys:String x:Key="Tray_CheckUpdates">Check for Updates…</sys:String>
 
     <!-- MainWindow headers -->
     <sys:String x:Key="Main_ClipboardHistory">Clipboard History</sys:String>
@@ -18,6 +20,7 @@
     <sys:String x:Key="Main_RunTemplate">Run Template</sys:String>
 
     <!-- Toolbar buttons -->
+    <sys:String x:Key="Btn_Settings">Settings</sys:String>
     <sys:String x:Key="Btn_Backup">Backup</sys:String>
     <sys:String x:Key="Btn_Restore">Restore</sys:String>
     <sys:String x:Key="Btn_LangEN">EN</sys:String>
@@ -26,6 +29,13 @@
     <!-- Clip item -->
     <sys:String x:Key="Clip_Copy">Copy</sys:String>
     <sys:String x:Key="Clip_Pin">Pin</sys:String>
+    <sys:String x:Key="Filter_All">All</sys:String>
+    <sys:String x:Key="Filter_Text">Text</sys:String>
+    <sys:String x:Key="Filter_Images">Images [IMG]</sys:String>
+    <sys:String x:Key="Type_Text">Text</sys:String>
+    <sys:String x:Key="Type_Image">Image</sys:String>
+    <sys:String x:Key="Type_Files">Files</sys:String>
+    <sys:String x:Key="Type_Sensitive">Sensitive</sys:String>
 
     <!-- QuickPaste -->
     <sys:String x:Key="QuickPaste_Title">Quick Paste</sys:String>
@@ -48,4 +58,25 @@
     <sys:String x:Key="Dlg_BackupFailed">Backup failed: {0}</sys:String>
     <sys:String x:Key="Dlg_RestoreSuccess">Restore completed successfully.</sys:String>
     <sys:String x:Key="Dlg_RestoreFailed">Restore failed: {0}</sys:String>
+
+    <!-- Settings window -->
+    <sys:String x:Key="Settings_Title">Settings</sys:String>
+    <sys:String x:Key="Settings_AutoStart">Start with Windows</sys:String>
+    <sys:String x:Key="Settings_StartHidden">Start hidden to tray</sys:String>
+    <sys:String x:Key="Settings_DoubleClickTray">Double-click tray icon to show/hide</sys:String>
+    <sys:String x:Key="Settings_CaptureHistory">Capture clipboard history</sys:String>
+    <sys:String x:Key="Settings_ExcludedApps">Excluded apps (one per line):</sys:String>
+    <sys:String x:Key="Settings_AutoClearDays">Auto-clear history after (days, 0=disabled):</sys:String>
+    <sys:String x:Key="Settings_AutoStar">Auto-star on double-copy within 1s</sys:String>
+    <sys:String x:Key="Settings_FontScale">UI font scale:</sys:String>
+    <sys:String x:Key="Settings_Save">Save</sys:String>
+    <sys:String x:Key="Settings_Cancel">Cancel</sys:String>
+    <sys:String x:Key="Settings_InvalidAutoClearDays">Please enter a whole number of days between 0 and 36500.</sys:String>
+    <sys:String x:Key="Settings_SaveFailed">Failed to save settings: {0}</sys:String>
+
+    <!-- Update -->
+    <sys:String x:Key="Dlg_UpdateTitle">Update Available</sys:String>
+    <sys:String x:Key="Dlg_UpdateAvailable">Version {0} is available. Do you want to update now?</sys:String>
+    <sys:String x:Key="Dlg_UpToDate">SmartClipVault is up to date.</sys:String>
+    <sys:String x:Key="Dlg_UpdateFailed">Update failed: {0}</sys:String>
 </ResourceDictionary>

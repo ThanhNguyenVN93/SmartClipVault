@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Diagnostics;
 using System.Drawing;
+using System.IO;
 using System.Globalization;
 using System.Threading;
 using System.Threading.Channels;
@@ -17,18 +18,22 @@ namespace SmartClipVault;
 
 public partial class App : Application
 {
+    private readonly record struct ClipQueueWork(ClipItem Item, bool IsStarOnly);
+
     private TaskbarIcon? _trayIcon;
     private MenuItem? _showMenuItem;
+    private MenuItem? _settingsMenuItem;
     private MenuItem? _exitMenuItem;
     private MenuItem? _backupMenuItem;
     private MenuItem? _restoreMenuItem;
+    private MenuItem? _updateMenuItem;
     private MenuItem? _langMenuItem;
     private MenuItem? _langEnMenuItem;
     private MenuItem? _langViMenuItem;
     private DatabaseService? _databaseService;
     private ClipboardMonitorService? _clipboardMonitor;
     private OcrService? _ocrService;
-    private Channel<ClipItem>? _clipQueue;
+    private Channel<ClipQueueWork>? _clipQueue;
     private Task? _clipWriterTask;
     private Timer? _sensitiveClipCleanupTimer;
     private int _sensitiveCleanupRunning;
@@ -37,11 +42,16 @@ public partial class App : Application
     private QuickPasteWindow? _quickPasteWindow;
     private CancellationTokenSource? _quickPasteLoadCts;
     private BackupService? _backupService;
+    private SettingsService? _settingsService;
+    private Views.SettingsWindow? _settingsWindow;
     private readonly LocalizationService _localizationService = new();
     private readonly CancellationTokenSource _shutdownCts = new();
     private bool _isBackupOrRestoreRunning;
+    private int _isUpdateCheckRunning;
 
     internal LocalizationService Localization => _localizationService;
+    internal ClipboardMonitorService? ClipboardMonitor => _clipboardMonitor;
+    internal SettingsService? Settings => _settingsService;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -49,12 +59,20 @@ public partial class App : Application
 
         try
         {
+            UpdateService.CleanupOldUpdateFiles();
+            _ = CleanupOldUpdateFilesDelayedAsync(_shutdownCts.Token);
+
+            _settingsService = new SettingsService();
+            var loadedSettings = _settingsService.Load();
+            ApplyFontScale(loadedSettings.UiFontScale);
+            _settingsService.SettingsChanged += OnSettingsChanged;
+
             _databaseService = new DatabaseService();
             _databaseService.Initialize();
             _backupService = new BackupService(_databaseService);
             _localizationService.LanguageChanged += OnLanguageChanged;
 
-            _clipQueue = Channel.CreateBounded<ClipItem>(new BoundedChannelOptions(1024)
+            _clipQueue = Channel.CreateBounded<ClipQueueWork>(new BoundedChannelOptions(1024)
             {
                 SingleReader = true,
                 SingleWriter = false,
@@ -65,7 +83,9 @@ public partial class App : Application
             _ocrService = new OcrService(_databaseService, ClipboardMonitorService.ImageDirectory);
 
             _clipboardMonitor = new ClipboardMonitorService();
+            _clipboardMonitor.Settings = _settingsService;
             _clipboardMonitor.ClipCaptured += OnClipCaptured;
+            _clipboardMonitor.DoubleCopyStar += OnDoubleCopyStar;
             _clipboardMonitor.Start();
 
             _sensitiveClipCleanupTimer = new Timer(
@@ -76,6 +96,12 @@ public partial class App : Application
 
             InitializeTrayIcon();
             InitializeHotkey();
+
+            if (loadedSettings.AutoClearDays > 0)
+                _ = DeleteExpiredUnpinnedClipsSafelyAsync(loadedSettings.AutoClearDays, _shutdownCts.Token);
+
+            if (!loadedSettings.StartHiddenToTray)
+                ShowMainWindow();
         }
         catch
         {
@@ -84,9 +110,27 @@ public partial class App : Application
         }
     }
 
+    private async Task DeleteExpiredUnpinnedClipsSafelyAsync(int days, CancellationToken ct)
+    {
+        try
+        {
+            if (_databaseService is null || ct.IsCancellationRequested)
+                return;
+
+            await _databaseService.DeleteExpiredUnpinnedClipsAsync(days, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            Trace.TraceError($"Startup auto-clear of expired clips failed: {ex}");
+        }
+    }
+
     private void OnClipCaptured(object? sender, ClipItem item)
     {
-        _clipQueue?.Writer.TryWrite(item);
+        _clipQueue?.Writer.TryWrite(new ClipQueueWork(item, IsStarOnly: false));
     }
 
     private async Task ProcessClipQueueAsync()
@@ -94,10 +138,22 @@ public partial class App : Application
         if (_clipQueue is null || _databaseService is null)
             return;
 
-        await foreach (var item in _clipQueue.Reader.ReadAllAsync().ConfigureAwait(false))
+        await foreach (var work in _clipQueue.Reader.ReadAllAsync().ConfigureAwait(false))
         {
+            var item = work.Item;
             try
             {
+                if (work.IsStarOnly)
+                {
+                    item.IsStarred = true;
+                    if (item.Id > 0)
+                    {
+                        _databaseService.SetClipStarred(item.Id, true);
+                        NotifyMainWindowClipStarred(item.Id);
+                    }
+                    continue;
+                }
+
                 if (item.ContentType == ClipContentType.Text && SecretDetector.IsSensitive(item.TextContent))
                     item.IsSensitive = true;
 
@@ -106,11 +162,29 @@ public partial class App : Application
 
                 if (item.ContentType == ClipContentType.Image)
                     _ocrService?.Enqueue(item);
+
+                if (item.IsStarred)
+                    NotifyMainWindowClipStarred(id);
             }
             catch (Exception ex)
             {
                 Trace.TraceError($"Failed to persist captured clip: {ex}");
             }
+        }
+    }
+
+    private void NotifyMainWindowClipStarred(long clipId)
+    {
+        if (clipId <= 0 || Volatile.Read(ref _cleanedUp) != 0)
+            return;
+
+        if (!Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
+        {
+            Dispatcher.BeginInvoke(() =>
+            {
+                if (Volatile.Read(ref _cleanedUp) == 0 && MainWindow is MainWindow mainWin && mainWin.IsLoaded)
+                    mainWin.StarClipById(clipId);
+            });
         }
     }
 
@@ -121,6 +195,10 @@ public partial class App : Application
         _showMenuItem = new MenuItem();
         _showMenuItem.SetResourceReference(HeaderedItemsControl.HeaderProperty, "Tray_Open");
         _showMenuItem.Click += OnShowMenuItemClick;
+
+        _settingsMenuItem = new MenuItem();
+        _settingsMenuItem.SetResourceReference(HeaderedItemsControl.HeaderProperty, "Tray_Settings");
+        _settingsMenuItem.Click += OnTraySettingsClick;
 
         _backupMenuItem = new MenuItem();
         _backupMenuItem.SetResourceReference(HeaderedItemsControl.HeaderProperty, "Tray_Backup");
@@ -144,12 +222,19 @@ public partial class App : Application
         _exitMenuItem.SetResourceReference(HeaderedItemsControl.HeaderProperty, "Tray_Exit");
         _exitMenuItem.Click += OnExitMenuItemClick;
 
+        _updateMenuItem = new MenuItem();
+        _updateMenuItem.SetResourceReference(HeaderedItemsControl.HeaderProperty, "Tray_CheckUpdates");
+        _updateMenuItem.Click += OnTrayCheckUpdatesClick;
+
         contextMenu.Items.Add(_showMenuItem);
+        contextMenu.Items.Add(_settingsMenuItem);
         contextMenu.Items.Add(new Separator());
         contextMenu.Items.Add(_backupMenuItem);
         contextMenu.Items.Add(_restoreMenuItem);
         contextMenu.Items.Add(new Separator());
         contextMenu.Items.Add(_langMenuItem);
+        contextMenu.Items.Add(new Separator());
+        contextMenu.Items.Add(_updateMenuItem);
         contextMenu.Items.Add(new Separator());
         contextMenu.Items.Add(_exitMenuItem);
 
@@ -278,7 +363,7 @@ public partial class App : Application
         if (Volatile.Read(ref _cleanedUp) != 0)
             return;
 
-        if (owner is { IsLoaded: true } && ReferenceEquals(MainWindow, owner))
+        if (owner is { IsLoaded: true, IsVisible: true } && ReferenceEquals(MainWindow, owner))
             MessageBox.Show(owner, message, "SmartClipVault", MessageBoxButton.OK, icon);
         else
             MessageBox.Show(message, "SmartClipVault", MessageBoxButton.OK, icon);
@@ -346,11 +431,101 @@ public partial class App : Application
 
     internal DatabaseService? GetDatabaseService() => _databaseService;
 
+    internal void ShowSettingsWindow(Window? owner = null)
+    {
+        if (Volatile.Read(ref _cleanedUp) != 0 || _settingsService is null)
+            return;
+
+        if (_settingsWindow is not null)
+        {
+            if (_settingsWindow.WindowState == WindowState.Minimized)
+                _settingsWindow.WindowState = WindowState.Normal;
+            _settingsWindow.Activate();
+            return;
+        }
+
+        var effectiveOwner = owner is { IsLoaded: true, IsVisible: true }
+            ? owner
+            : (MainWindow is { IsLoaded: true, IsVisible: true } mw ? mw : null);
+
+        var dialog = new Views.SettingsWindow(_settingsService)
+        {
+            Owner = effectiveOwner,
+            WindowStartupLocation = effectiveOwner is not null
+                ? WindowStartupLocation.CenterOwner
+                : WindowStartupLocation.CenterScreen
+        };
+
+        _settingsWindow = dialog;
+        try
+        {
+            dialog.ShowDialog();
+        }
+        finally
+        {
+            if (ReferenceEquals(_settingsWindow, dialog))
+                _settingsWindow = null;
+        }
+    }
+
+    private void OnTraySettingsClick(object sender, RoutedEventArgs e)
+        => ShowSettingsWindow();
+
+    private void OnSettingsChanged(object? sender, AppSettings settings)
+    {
+        if (Volatile.Read(ref _cleanedUp) != 0)
+            return;
+
+        if (Dispatcher.CheckAccess())
+        {
+            ApplyFontScale(settings.UiFontScale);
+            return;
+        }
+
+        if (!Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
+        {
+            Dispatcher.BeginInvoke(() =>
+            {
+                if (Volatile.Read(ref _cleanedUp) == 0)
+                    ApplyFontScale(settings.UiFontScale);
+            });
+        }
+    }
+
+    private void ApplyFontScale(double scale)
+    {
+        var effectiveScale = scale is 0.9 or 1.0 or 1.1 or 1.25 ? scale : 1.0;
+        Resources["FontSizeBase"] = 12.0 * effectiveScale;
+        Resources["FontSize12"] = 12.0 * effectiveScale;
+        Resources["FontSize11"] = 11.0 * effectiveScale;
+        Resources["FontSize10"] = 10.0 * effectiveScale;
+    }
+
     private void OnShowMenuItemClick(object sender, RoutedEventArgs e) => ShowMainWindow();
 
     private void OnExitMenuItemClick(object sender, RoutedEventArgs e) => Shutdown();
 
-    private void OnTrayMouseDoubleClick(object sender, RoutedEventArgs e) => ShowMainWindow();
+    private void OnTrayMouseDoubleClick(object sender, RoutedEventArgs e)
+    {
+        if (Volatile.Read(ref _cleanedUp) != 0)
+            return;
+
+        if (_settingsService?.Current.DoubleClickTrayToToggle == false)
+            return;
+
+        if (MainWindow is SmartClipVault.MainWindow { IsVisible: true } win && win.WindowState != WindowState.Minimized)
+            win.Hide();
+        else
+            ShowMainWindow();
+    }
+
+    private void OnDoubleCopyStar(object? sender, Models.ClipItem item)
+    {
+        if (Volatile.Read(ref _cleanedUp) != 0)
+            return;
+
+        _clipQueue?.Writer.TryWrite(new ClipQueueWork(item, IsStarOnly: true));
+    }
 
     private void InitializeHotkey()
     {
@@ -418,7 +593,7 @@ public partial class App : Application
 
     private void ShowMainWindow()
     {
-        if (MainWindow is null)
+        if (MainWindow is not SmartClipVault.MainWindow)
         {
             var window = new MainWindow();
             window.Closed += OnMainWindowClosed;
@@ -428,12 +603,15 @@ public partial class App : Application
             MainWindow = window;
         }
 
+        var wasHidden = !MainWindow.IsVisible;
         MainWindow.Show();
         if (MainWindow.WindowState == WindowState.Minimized)
         {
             MainWindow.WindowState = WindowState.Normal;
         }
         MainWindow.Activate();
+        if (wasHidden && MainWindow is SmartClipVault.MainWindow mw)
+            mw.RefreshClips();
     }
 
     private void OnMainWindowClosed(object? sender, EventArgs e)
@@ -480,10 +658,18 @@ public partial class App : Application
 
         try { _shutdownCts.Cancel(); } catch (ObjectDisposedException) { }
         _localizationService.LanguageChanged -= OnLanguageChanged;
+        if (_settingsService is not null)
+            _settingsService.SettingsChanged -= OnSettingsChanged;
 
         _quickPasteLoadCts?.Cancel();
         _quickPasteLoadCts?.Dispose();
         _quickPasteLoadCts = null;
+
+        if (_settingsWindow is not null)
+        {
+            try { _settingsWindow.Close(); } catch (InvalidOperationException) { }
+            _settingsWindow = null;
+        }
 
         if (_hotkeyService is not null)
         {
@@ -509,6 +695,7 @@ public partial class App : Application
         if (_clipboardMonitor is not null)
         {
             _clipboardMonitor.ClipCaptured -= OnClipCaptured;
+            _clipboardMonitor.DoubleCopyStar -= OnDoubleCopyStar;
             _clipboardMonitor.Dispose();
             _clipboardMonitor = null;
         }
@@ -557,6 +744,12 @@ public partial class App : Application
             _showMenuItem = null;
         }
 
+        if (_settingsMenuItem is not null)
+        {
+            _settingsMenuItem.Click -= OnTraySettingsClick;
+            _settingsMenuItem = null;
+        }
+
         if (_backupMenuItem is not null)
         {
             _backupMenuItem.Click -= OnTrayBackupClick;
@@ -567,6 +760,12 @@ public partial class App : Application
         {
             _restoreMenuItem.Click -= OnTrayRestoreClick;
             _restoreMenuItem = null;
+        }
+
+        if (_updateMenuItem is not null)
+        {
+            _updateMenuItem.Click -= OnTrayCheckUpdatesClick;
+            _updateMenuItem = null;
         }
 
         if (_langEnMenuItem is not null)
@@ -601,6 +800,139 @@ public partial class App : Application
             _trayIcon.ContextMenu = null;
             _trayIcon.Dispose();
             _trayIcon = null;
+        }
+    }
+
+    private static async Task CleanupOldUpdateFilesDelayedAsync(CancellationToken ct)
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(6), ct).ConfigureAwait(false);
+            UpdateService.CleanupOldUpdateFiles();
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            Trace.TraceError($"Deferred old-update cleanup failed: {ex}");
+        }
+    }
+
+    private async void OnTrayCheckUpdatesClick(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            await CheckForUpdatesAsync().ConfigureAwait(true);
+        }
+        catch (Exception ex)
+        {
+            Trace.TraceError($"Unexpected error in update check handler: {ex}");
+        }
+    }
+
+    private async Task CheckForUpdatesAsync()
+    {
+        if (Volatile.Read(ref _cleanedUp) != 0)
+            return;
+
+        if (Interlocked.CompareExchange(ref _isUpdateCheckRunning, 1, 0) != 0)
+            return;
+
+        if (_updateMenuItem is not null)
+            _updateMenuItem.IsEnabled = false;
+
+        try
+        {
+            var ct = _shutdownCts.Token;
+            if (ct.IsCancellationRequested)
+                return;
+
+            var asmVer = typeof(App).Assembly.GetName().Version;
+            var currentVersion = asmVer is not null
+                ? $"{asmVer.Major}.{asmVer.Minor}.{asmVer.Build}"
+                : "1.0.0";
+
+            UpdateService.ReleaseInfo? info;
+            try
+            {
+                info = await UpdateService.CheckForUpdateAsync(
+                    currentVersion,
+                    cancellationToken: ct).ConfigureAwait(true);
+            }
+            catch (OperationCanceledException) { return; }
+            catch (Exception ex)
+            {
+                Trace.TraceError($"Update check failed: {ex}");
+                if (Volatile.Read(ref _cleanedUp) != 0) return;
+                ShowMessageBox(MainWindow,
+                    FormatResourceMessage(TryGetResourceString("Dlg_UpdateFailed", "Update failed: {0}"), ex.Message),
+                    MessageBoxImage.Error);
+                return;
+            }
+
+            if (Volatile.Read(ref _cleanedUp) != 0 || ct.IsCancellationRequested) return;
+
+            if (info is null)
+            {
+                ShowMessageBox(MainWindow, TryGetResourceString("Dlg_UpToDate", "SmartClipVault is up to date."), MessageBoxImage.Information);
+                return;
+            }
+
+            var title = TryGetResourceString("Dlg_UpdateTitle", "Update Available");
+            var msg = FormatResourceMessage(
+                TryGetResourceString("Dlg_UpdateAvailable", "Version {0} is available. Do you want to update now?"),
+                info.Version);
+
+            var confirm = MainWindow is { IsLoaded: true, IsVisible: true } mw
+                ? MessageBox.Show(mw, msg, title, MessageBoxButton.YesNo, MessageBoxImage.Question)
+                : MessageBox.Show(msg, title, MessageBoxButton.YesNo, MessageBoxImage.Question);
+
+            if (confirm != MessageBoxResult.Yes)
+                return;
+
+            if (Volatile.Read(ref _cleanedUp) != 0 || ct.IsCancellationRequested)
+                return;
+
+            await DownloadAndApplyUpdateAsync(info, ct).ConfigureAwait(true);
+        }
+        finally
+        {
+            Volatile.Write(ref _isUpdateCheckRunning, 0);
+            if (Volatile.Read(ref _cleanedUp) == 0 && _updateMenuItem is not null)
+                _updateMenuItem.IsEnabled = true;
+        }
+    }
+
+    private async Task DownloadAndApplyUpdateAsync(UpdateService.ReleaseInfo info, CancellationToken ct)
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), $"SmartClipVaultUpdate_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+
+        try
+        {
+            var stagedExePath = await UpdateService.DownloadAndStageUpdateAsync(
+                info,
+                tempDir,
+                cancellationToken: ct).ConfigureAwait(true);
+
+            if (Volatile.Read(ref _cleanedUp) != 0 || ct.IsCancellationRequested)
+                return;
+
+            UpdateService.ApplyStagedUpdate(stagedExePath);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Trace.TraceError($"Update download/apply failed: {ex}");
+            if (Volatile.Read(ref _cleanedUp) != 0) return;
+            ShowMessageBox(MainWindow,
+                FormatResourceMessage(TryGetResourceString("Dlg_UpdateFailed", "Update failed: {0}"), ex.Message),
+                MessageBoxImage.Error);
+        }
+        finally
+        {
+            UpdateService.TryDeleteDirectory(tempDir);
         }
     }
 

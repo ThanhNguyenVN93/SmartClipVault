@@ -150,14 +150,64 @@ public static class PasteHelper
 
     public static bool TryValidateImagePath(string? imagePath, out string fullPath, string? allowedDirectory = null)
     {
+        if (!TryNormalizeContainedImagePath(imagePath, out var candidate, allowedDirectory))
+        {
+            fullPath = string.Empty;
+            return false;
+        }
+
+        try
+        {
+            var baseDir = string.IsNullOrWhiteSpace(allowedDirectory)
+                ? ClipboardMonitorService.ImageDirectory
+                : allowedDirectory;
+            var normalizedBaseNoSlash = Path.GetFullPath(baseDir)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+            if (HasReparsePointSubdirectory(candidate, normalizedBaseNoSlash))
+            {
+                fullPath = string.Empty;
+                return false;
+            }
+
+            var fileInfo = new FileInfo(candidate);
+            if (!fileInfo.Exists ||
+                (fileInfo.Attributes & FileAttributes.Directory) != 0 ||
+                (fileInfo.Attributes & FileAttributes.ReparsePoint) != 0 ||
+                fileInfo.Length <= 0 ||
+                fileInfo.Length > MaxImageFileBytes)
+            {
+                fullPath = string.Empty;
+                return false;
+            }
+
+            fullPath = candidate;
+            return true;
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException or IOException or UnauthorizedAccessException)
+        {
+            fullPath = string.Empty;
+            return false;
+        }
+    }
+
+    internal static bool TryNormalizeContainedImagePath(string? imagePath, out string fullPath, string? allowedDirectory = null)
+    {
         fullPath = string.Empty;
         if (string.IsNullOrWhiteSpace(imagePath) || !Path.IsPathFullyQualified(imagePath))
+            return false;
+
+        if (HasTraversalPathSegment(imagePath))
             return false;
 
         try
         {
             var candidate = Path.GetFullPath(imagePath);
             if (candidate.StartsWith(@"\\", StringComparison.Ordinal))
+                return false;
+
+            // Reject NTFS Alternate Data Streams (e.g. "file.png:stream") while permitting the drive colon at index 1.
+            if (candidate.IndexOf(':', 2) >= 0)
                 return false;
 
             var baseDir = string.IsNullOrWhiteSpace(allowedDirectory)
@@ -170,56 +220,164 @@ public static class PasteHelper
             if (!candidate.StartsWith(normalizedDir, StringComparison.OrdinalIgnoreCase))
                 return false;
 
-            var fileInfo = new FileInfo(candidate);
-            if (!fileInfo.Exists ||
-                (fileInfo.Attributes & FileAttributes.Directory) != 0 ||
-                (fileInfo.Attributes & FileAttributes.ReparsePoint) != 0 ||
-                fileInfo.Length <= 0 ||
-                fileInfo.Length > MaxImageFileBytes)
-            {
-                return false;
-            }
-
             fullPath = candidate;
             return true;
         }
-        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException or IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
         {
             return false;
         }
     }
 
+    private static bool HasTraversalPathSegment(string path)
+    {
+        foreach (var segment in path.Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (segment is "." or "..")
+                return true;
+        }
+        return false;
+    }
+
+    private static bool HasReparsePointSubdirectory(string candidateFile, string normalizedBaseNoSlash)
+    {
+        var current = Path.GetDirectoryName(candidateFile);
+        while (!string.IsNullOrEmpty(current) &&
+               current.Length > normalizedBaseNoSlash.Length &&
+               !string.Equals(current, normalizedBaseNoSlash, StringComparison.OrdinalIgnoreCase))
+        {
+            var dirInfo = new DirectoryInfo(current);
+            if (!dirInfo.Exists || (dirInfo.Attributes & FileAttributes.ReparsePoint) != 0)
+                return true;
+
+            current = Path.GetDirectoryName(current);
+        }
+
+        return false;
+    }
+
     public static Task<BitmapImage?> TryLoadClipboardImageAsync(string? imagePath, CancellationToken cancellationToken = default)
     {
-        if (!TryValidateImagePath(imagePath, out var validatedPath))
+        if (!TryNormalizeContainedImagePath(imagePath, out var normalizedPath))
             return Task.FromResult<BitmapImage?>(null);
 
         return Task.Run<BitmapImage?>(() =>
         {
             cancellationToken.ThrowIfCancellationRequested();
-
-            try
-            {
-                using var stream = new FileStream(
-                    validatedPath,
-                    FileMode.Open,
-                    FileAccess.Read,
-                    FileShare.ReadWrite | FileShare.Delete);
-
-                var bitmap = new BitmapImage();
-                bitmap.BeginInit();
-                bitmap.CacheOption = BitmapCacheOption.OnLoad;
-                bitmap.StreamSource = stream;
-                bitmap.EndInit();
-                bitmap.Freeze();
-                return bitmap;
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or InvalidOperationException)
-            {
-                Trace.TraceWarning($"Failed to load clipboard image '{validatedPath}': {ex.GetType().Name}: {ex.Message}");
+            if (!TryValidateImagePath(normalizedPath, out var validatedPath))
                 return null;
-            }
+
+            return LoadBitmapFromValidatedPath(validatedPath, targetPixelSize: null, maxDecodedDimension: null);
         }, cancellationToken);
+    }
+
+    public static Task<BitmapImage?> TryLoadThumbnailAsync(
+        string? imagePath,
+        int targetPixelSize = 96,
+        int maxDecodedDimension = 256,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(targetPixelSize, 0);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(maxDecodedDimension, 0);
+
+        if (!TryNormalizeContainedImagePath(imagePath, out var normalizedPath))
+            return Task.FromResult<BitmapImage?>(null);
+
+        return Task.Run<BitmapImage?>(() =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!TryValidateImagePath(normalizedPath, out var validatedPath))
+                return null;
+
+            return LoadBitmapFromValidatedPath(validatedPath, targetPixelSize, maxDecodedDimension);
+        }, cancellationToken);
+    }
+
+    private static BitmapImage? LoadBitmapFromValidatedPath(
+        string validatedPath,
+        int? targetPixelSize,
+        int? maxDecodedDimension)
+    {
+        try
+        {
+            using var stream = new FileStream(
+                validatedPath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete);
+
+            int? decodeWidth = null;
+            int? decodeHeight = null;
+            if (targetPixelSize is int targetPx && maxDecodedDimension is int maxDim)
+            {
+                ComputeThumbnailDecodeDimensions(stream, targetPx, maxDim, out decodeWidth, out decodeHeight);
+                stream.Position = 0;
+            }
+
+            var bitmap = new BitmapImage();
+            bitmap.BeginInit();
+            bitmap.CacheOption = BitmapCacheOption.OnLoad;
+            if (decodeWidth is int dw)
+                bitmap.DecodePixelWidth = Math.Max(1, dw);
+            else if (decodeHeight is int dh)
+                bitmap.DecodePixelHeight = Math.Max(1, dh);
+            bitmap.StreamSource = stream;
+            bitmap.EndInit();
+            bitmap.Freeze();
+            return bitmap;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or InvalidOperationException or FormatException or ArgumentException or ExternalException)
+        {
+            Trace.TraceWarning($"Failed to load clipboard image '{validatedPath}': {ex.GetType().Name}: {ex.Message}");
+            return null;
+        }
+    }
+
+    private static void ComputeThumbnailDecodeDimensions(
+        Stream stream,
+        int targetPixelSize,
+        int maxDecodedDimension,
+        out int? decodeWidth,
+        out int? decodeHeight)
+    {
+        decodeWidth = null;
+        decodeHeight = null;
+
+        var effectiveTarget = Math.Min(targetPixelSize, maxDecodedDimension);
+        var decoder = BitmapDecoder.Create(stream, BitmapCreateOptions.DelayCreation, BitmapCacheOption.None);
+        if (decoder.Frames.Count == 0)
+        {
+            decodeWidth = effectiveTarget;
+            return;
+        }
+
+        var frame = decoder.Frames[0];
+        var pw = frame.PixelWidth;
+        var ph = frame.PixelHeight;
+        if (pw <= 0 || ph <= 0)
+        {
+            decodeWidth = effectiveTarget;
+            return;
+        }
+
+        if (pw >= ph)
+        {
+            var targetH = Math.Min(effectiveTarget, ph);
+            var scaledW = (int)Math.Round((double)pw * targetH / ph);
+            if (scaledW > maxDecodedDimension)
+                decodeWidth = maxDecodedDimension;
+            else
+                decodeHeight = targetH;
+        }
+        else
+        {
+            var targetW = Math.Min(effectiveTarget, pw);
+            var scaledH = (int)Math.Round((double)ph * targetW / pw);
+            if (scaledH > maxDecodedDimension)
+                decodeHeight = maxDecodedDimension;
+            else
+                decodeWidth = targetW;
+        }
     }
 
     public static bool TrySetClipboardText(string? text)
@@ -229,7 +387,9 @@ public static class PasteHelper
 
         try
         {
+            using var suppression = ClipboardMonitorService.SuppressActiveSelfCopy();
             Clipboard.SetText(text);
+            suppression.MarkSucceeded();
             return true;
         }
         catch (Exception ex) when (ex is ExternalException or ArgumentException)
@@ -246,7 +406,9 @@ public static class PasteHelper
 
         try
         {
+            using var suppression = ClipboardMonitorService.SuppressActiveSelfCopy();
             Clipboard.SetImage(image);
+            suppression.MarkSucceeded();
             return true;
         }
         catch (ExternalException ex)

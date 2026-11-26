@@ -77,6 +77,7 @@ public class DatabaseService
                     ImagePath TEXT NULL,
                     OcrText TEXT NULL,
                     IsSensitive INTEGER NOT NULL DEFAULT 0,
+                    IsStarred INTEGER NOT NULL DEFAULT 0,
                     CreatedAt TEXT NOT NULL,
                     PinBoardId INTEGER NULL
                 );
@@ -89,6 +90,32 @@ public class DatabaseService
                 );
                 """;
             command.ExecuteNonQuery();
+            EnsureClipsSchemaUpToDate(connection);
+        }
+    }
+
+    private static void EnsureClipsSchemaUpToDate(SqliteConnection connection)
+    {
+        var hasIsStarred = false;
+        using (var pragmaCmd = connection.CreateCommand())
+        {
+            pragmaCmd.CommandText = "PRAGMA table_info(clips);";
+            using var reader = pragmaCmd.ExecuteReader();
+            while (reader.Read())
+            {
+                if (!reader.IsDBNull(1) && string.Equals(reader.GetString(1), "IsStarred", StringComparison.OrdinalIgnoreCase))
+                {
+                    hasIsStarred = true;
+                    break;
+                }
+            }
+        }
+
+        if (!hasIsStarred)
+        {
+            using var alterCmd = connection.CreateCommand();
+            alterCmd.CommandText = "ALTER TABLE clips ADD COLUMN IsStarred INTEGER NOT NULL DEFAULT 0;";
+            alterCmd.ExecuteNonQuery();
         }
     }
 
@@ -104,7 +131,7 @@ public class DatabaseService
             if (string.IsNullOrWhiteSpace(search))
             {
                 command.CommandText = """
-                    SELECT Id, ContentType, TextContent, ImagePath, OcrText, IsSensitive, CreatedAt, PinBoardId
+                    SELECT Id, ContentType, TextContent, ImagePath, OcrText, IsSensitive, CreatedAt, PinBoardId, IsStarred
                     FROM clips ORDER BY CreatedAt DESC LIMIT $limit;
                     """;
                 command.Parameters.AddWithValue("$limit", limit);
@@ -113,7 +140,7 @@ public class DatabaseService
             {
                 var escaped = EscapeLikePattern(search.Trim());
                 command.CommandText = """
-                    SELECT Id, ContentType, TextContent, ImagePath, OcrText, IsSensitive, CreatedAt, PinBoardId
+                    SELECT Id, ContentType, TextContent, ImagePath, OcrText, IsSensitive, CreatedAt, PinBoardId, IsStarred
                     FROM clips
                     WHERE IsSensitive = 0
                       AND (TextContent LIKE $search ESCAPE '\' OR OcrText LIKE $search ESCAPE '\')
@@ -207,7 +234,7 @@ public class DatabaseService
             using var connection = OpenConnection();
             using var command = connection.CreateCommand();
             command.CommandText = """
-                SELECT Id, ContentType, TextContent, ImagePath, OcrText, IsSensitive, CreatedAt, PinBoardId
+                SELECT Id, ContentType, TextContent, ImagePath, OcrText, IsSensitive, CreatedAt, PinBoardId, IsStarred
                 FROM clips WHERE PinBoardId = $boardId ORDER BY CreatedAt DESC;
                 """;
             command.Parameters.AddWithValue("$boardId", boardId);
@@ -239,7 +266,8 @@ public class DatabaseService
                 OcrText = reader.IsDBNull(4) ? null : reader.GetString(4),
                 IsSensitive = reader.GetInt32(5) != 0,
                 CreatedAt = DateTime.Parse(reader.GetString(6), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
-                PinBoardId = reader.IsDBNull(7) ? null : reader.GetInt64(7)
+                PinBoardId = reader.IsDBNull(7) ? null : reader.GetInt64(7),
+                IsStarred = reader.FieldCount > 8 && !reader.IsDBNull(8) && reader.GetInt32(8) != 0
             });
         }
         return clips;
@@ -262,8 +290,8 @@ public class DatabaseService
 
             using var command = connection.CreateCommand();
             command.CommandText = """
-                INSERT INTO clips (ContentType, TextContent, ImagePath, OcrText, IsSensitive, CreatedAt, PinBoardId)
-                VALUES ($contentType, $textContent, $imagePath, $ocrText, $isSensitive, $createdAt, $pinBoardId);
+                INSERT INTO clips (ContentType, TextContent, ImagePath, OcrText, IsSensitive, IsStarred, CreatedAt, PinBoardId)
+                VALUES ($contentType, $textContent, $imagePath, $ocrText, $isSensitive, $isStarred, $createdAt, $pinBoardId);
                 SELECT last_insert_rowid();
                 """;
             command.Parameters.AddWithValue("$contentType", (int)item.ContentType);
@@ -271,11 +299,28 @@ public class DatabaseService
             command.Parameters.AddWithValue("$imagePath", (object?)item.ImagePath ?? DBNull.Value);
             command.Parameters.AddWithValue("$ocrText", (object?)item.OcrText ?? DBNull.Value);
             command.Parameters.AddWithValue("$isSensitive", item.IsSensitive ? 1 : 0);
+            command.Parameters.AddWithValue("$isStarred", item.IsStarred ? 1 : 0);
             command.Parameters.AddWithValue("$createdAt", createdAtUtc.ToString("O"));
             command.Parameters.AddWithValue("$pinBoardId", (object?)item.PinBoardId ?? DBNull.Value);
 
             var result = command.ExecuteScalar();
             return result is long id ? id : Convert.ToInt64(result);
+        }
+    }
+
+    public void SetClipStarred(long id, bool isStarred)
+    {
+        if (id <= 0)
+            return;
+
+        lock (_syncLock)
+        {
+            using var connection = OpenConnection();
+            using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE clips SET IsStarred = $isStarred WHERE Id = $id;";
+            command.Parameters.AddWithValue("$isStarred", isStarred ? 1 : 0);
+            command.Parameters.AddWithValue("$id", id);
+            command.ExecuteNonQuery();
         }
     }
 
@@ -296,6 +341,49 @@ public class DatabaseService
         }
     }
 
+    public void DeleteExpiredUnpinnedClips(int days)
+    {
+        if (days <= 0 || days >= (DateTime.UtcNow - DateTime.MinValue).TotalDays)
+            return;
+
+        var cutoff = DateTime.UtcNow.AddDays(-days);
+        var imagePaths = new List<string>();
+
+        lock (_syncLock)
+        {
+            using var connection = OpenConnection();
+            using var tx = connection.BeginTransaction();
+
+            using (var select = connection.CreateCommand())
+            {
+                select.Transaction = tx;
+                select.CommandText = "SELECT ImagePath FROM clips WHERE PinBoardId IS NULL AND IsStarred = 0 AND CreatedAt < $cutoff AND ImagePath IS NOT NULL;";
+                select.Parameters.AddWithValue("$cutoff", cutoff.ToString("O"));
+                using var reader = select.ExecuteReader();
+                while (reader.Read())
+                {
+                    if (!reader.IsDBNull(0))
+                        imagePaths.Add(reader.GetString(0));
+                }
+            }
+
+            using (var command = connection.CreateCommand())
+            {
+                command.Transaction = tx;
+                command.CommandText = "DELETE FROM clips WHERE PinBoardId IS NULL AND IsStarred = 0 AND CreatedAt < $cutoff;";
+                command.Parameters.AddWithValue("$cutoff", cutoff.ToString("O"));
+                command.ExecuteNonQuery();
+            }
+
+            tx.Commit();
+        }
+
+        DeleteImageFilesSafely(imagePaths);
+    }
+
+    public Task DeleteExpiredUnpinnedClipsAsync(int days, System.Threading.CancellationToken cancellationToken = default)
+        => System.Threading.Tasks.Task.Run(() => DeleteExpiredUnpinnedClips(days), cancellationToken);
+
     public void DeleteExpiredSensitiveClips(TimeSpan maxAge)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(maxAge, TimeSpan.Zero);
@@ -303,14 +391,53 @@ public class DatabaseService
             return;
 
         var cutoff = DateTime.UtcNow - maxAge;
+        var imagePaths = new List<string>();
 
         lock (_syncLock)
         {
             using var connection = OpenConnection();
-            using var command = connection.CreateCommand();
-            command.CommandText = "DELETE FROM clips WHERE IsSensitive = 1 AND CreatedAt < $cutoff;";
-            command.Parameters.AddWithValue("$cutoff", cutoff.ToString("O"));
-            command.ExecuteNonQuery();
+            using var tx = connection.BeginTransaction();
+
+            using (var select = connection.CreateCommand())
+            {
+                select.Transaction = tx;
+                select.CommandText = "SELECT ImagePath FROM clips WHERE IsSensitive = 1 AND CreatedAt < $cutoff AND ImagePath IS NOT NULL;";
+                select.Parameters.AddWithValue("$cutoff", cutoff.ToString("O"));
+                using var reader = select.ExecuteReader();
+                while (reader.Read())
+                {
+                    if (!reader.IsDBNull(0))
+                        imagePaths.Add(reader.GetString(0));
+                }
+            }
+
+            using (var command = connection.CreateCommand())
+            {
+                command.Transaction = tx;
+                command.CommandText = "DELETE FROM clips WHERE IsSensitive = 1 AND CreatedAt < $cutoff;";
+                command.Parameters.AddWithValue("$cutoff", cutoff.ToString("O"));
+                command.ExecuteNonQuery();
+            }
+
+            tx.Commit();
+        }
+
+        DeleteImageFilesSafely(imagePaths);
+    }
+
+    private static void DeleteImageFilesSafely(IEnumerable<string> imagePaths)
+    {
+        foreach (var path in imagePaths)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+                continue;
+            try
+            {
+                if (File.Exists(path))
+                    File.Delete(path);
+            }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
         }
     }
 
@@ -376,6 +503,7 @@ public class DatabaseService
                 {
                     SqliteConnection.ClearPool(dest);
                     src.BackupDatabase(dest);
+                    EnsureClipsSchemaUpToDate(dest);
                 }
                 finally
                 {

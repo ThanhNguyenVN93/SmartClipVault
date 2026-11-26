@@ -1,6 +1,7 @@
 using System;
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -30,6 +31,22 @@ public sealed class ClipboardMonitorService : IDisposable
     private const int MaxClipboardImageBytes = 64 * 1024 * 1024;
     private static readonly IntPtr HwndMessage = new(-3);
 
+    private static readonly Lock ActiveMonitorsLock = new();
+    private static readonly HashSet<ClipboardMonitorService> ActiveMonitors = [];
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+    private volatile SettingsService? _settings;
+    public SettingsService? Settings
+    {
+        get => _settings;
+        set => _settings = value;
+    }
+
     private readonly Lock _stateLock = new();
     private HwndSource? _hwndSource;
     private CancellationTokenSource? _retryCts;
@@ -37,8 +54,47 @@ public sealed class ClipboardMonitorService : IDisposable
     private volatile bool _disposed;
     private byte[]? _lastTextHash;
     private byte[]? _lastImageHash;
+    private int _selfWriteDepth;
+    private uint _selfWriteInitialSequence;
+    private bool _selfWriteSucceeded;
+    private uint _suppressedSequenceNumber;
+    private long _suppressedUntilTickMs;
+    private string? _lastCapturedText;
+    private long _lastCapturedTextTickMs;
+    private ClipItem? _lastCapturedItem;
+    private bool _lastCapturedStarred;
+
+    public sealed class SelfCopySuppressionScope : IDisposable
+    {
+        private readonly ClipboardMonitorService[] _monitors;
+        private int _succeeded;
+        private int _disposed;
+
+        internal SelfCopySuppressionScope(ClipboardMonitorService[] monitors)
+        {
+            _monitors = monitors;
+            foreach (var monitor in _monitors)
+                monitor.EnterSelfCopySuppression();
+        }
+
+        public void MarkSucceeded() => Interlocked.Exchange(ref _succeeded, 1);
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                return;
+
+            var succeeded = Volatile.Read(ref _succeeded) != 0;
+            foreach (var monitor in _monitors)
+                monitor.ExitSelfCopySuppression(succeeded);
+        }
+    }
 
     public event EventHandler<ClipItem>? ClipCaptured;
+    public event EventHandler<ClipItem>? DoubleCopyStar;
+
+    [DllImport("user32.dll")]
+    private static extern uint GetClipboardSequenceNumber();
 
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -115,6 +171,12 @@ public sealed class ClipboardMonitorService : IDisposable
                 _hwndSource = hwndSource;
                 _isListening = true;
             }
+
+            lock (ActiveMonitorsLock)
+            {
+                if (!_disposed)
+                    ActiveMonitors.Add(this);
+            }
         }
         catch
         {
@@ -128,10 +190,117 @@ public sealed class ClipboardMonitorService : IDisposable
         }
     }
 
+    public SelfCopySuppressionScope SuppressSelfCopy() => new([this]);
+
+    internal static SelfCopySuppressionScope SuppressActiveSelfCopy()
+    {
+        ClipboardMonitorService[] snapshot;
+        lock (ActiveMonitorsLock)
+        {
+            snapshot = ActiveMonitors.Count == 0 ? [] : [.. ActiveMonitors];
+        }
+        return new SelfCopySuppressionScope(snapshot);
+    }
+
+    private void EnterSelfCopySuppression()
+    {
+        CancellationTokenSource? previousCts;
+
+        lock (_stateLock)
+        {
+            if (_disposed)
+                return;
+
+            if (_selfWriteDepth == 0)
+            {
+                _selfWriteInitialSequence = GetClipboardSequenceNumber();
+                _selfWriteSucceeded = false;
+            }
+
+            _selfWriteDepth++;
+            previousCts = _retryCts;
+            _retryCts = null;
+        }
+
+        if (previousCts is not null)
+        {
+            try
+            {
+                previousCts.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+        }
+    }
+
+    private void ExitSelfCopySuppression(bool succeeded)
+    {
+        lock (_stateLock)
+        {
+            if (_selfWriteDepth <= 0)
+                return;
+
+            if (succeeded)
+                _selfWriteSucceeded = true;
+
+            _selfWriteDepth--;
+            if (_selfWriteDepth > 0 || _disposed || !_selfWriteSucceeded)
+                return;
+
+            var seqAfter = GetClipboardSequenceNumber();
+            if (seqAfter != 0 && seqAfter != _selfWriteInitialSequence)
+            {
+                _suppressedSequenceNumber = seqAfter;
+                _suppressedUntilTickMs = 0;
+            }
+            else if (seqAfter == 0)
+            {
+                _suppressedSequenceNumber = 0;
+                _suppressedUntilTickMs = Environment.TickCount64 + 500;
+            }
+        }
+    }
+
+    private bool ShouldSuppressClipboardUpdate()
+    {
+        var currentSeq = GetClipboardSequenceNumber();
+
+        lock (_stateLock)
+        {
+            if (_disposed || _selfWriteDepth > 0)
+                return true;
+
+            if (_suppressedSequenceNumber != 0)
+            {
+                if (currentSeq == _suppressedSequenceNumber)
+                    return true;
+
+                _suppressedSequenceNumber = 0;
+            }
+
+            if (_suppressedUntilTickMs != 0)
+            {
+                if (Environment.TickCount64 <= _suppressedUntilTickMs)
+                    return true;
+
+                _suppressedUntilTickMs = 0;
+            }
+
+            return false;
+        }
+    }
+
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
         if (msg == WmClipboardUpdate && !_disposed)
         {
+            if (ShouldSuppressClipboardUpdate())
+            {
+                handled = true;
+                return IntPtr.Zero;
+            }
+
             StartClipboardProcessing();
             handled = true;
         }
@@ -178,38 +347,120 @@ public sealed class ClipboardMonitorService : IDisposable
 
             for (var attempt = 0; attempt < MaxRetries; attempt++)
             {
-                if (_disposed || cancellationToken.IsCancellationRequested)
+                if (_disposed || cancellationToken.IsCancellationRequested || ShouldSuppressClipboardUpdate())
                     return;
 
-                var hwnd = _hwndSource?.Handle ?? IntPtr.Zero;
+                var settings = _settings?.GetSnapshot();
+                if (settings is not null && !settings.CaptureHistory)
+                {
+                    ClearLastCapturedTextState();
+                    return;
+                }
+
+                if (settings is not null && IsForegroundAppExcluded(settings.ExcludedApps))
+                {
+                    ClearLastCapturedTextState();
+                    return;
+                }
+
+                IntPtr hwnd;
+                lock (_stateLock)
+                {
+                    if (_disposed || _hwndSource is null || _hwndSource.IsDisposed)
+                        return;
+                    hwnd = _hwndSource.Handle;
+                }
                 if (hwnd == IntPtr.Zero)
                     return;
 
                 if (TryReadClipboardData(hwnd, out var text, out var dibBytes, out var shouldRetry))
                 {
-                    if (!string.IsNullOrWhiteSpace(text) && !IsDuplicateText(text))
-                    {
-                        var item = new ClipItem
-                        {
-                            ContentType = ClipContentType.Text,
-                            TextContent = text.Trim(),
-                            CreatedAt = DateTime.UtcNow
-                        };
+                    if (ShouldSuppressClipboardUpdate())
+                        return;
 
-                        if (!_disposed && !cancellationToken.IsCancellationRequested)
+                    if (!string.IsNullOrWhiteSpace(text))
+                    {
+                        var trimmed = text.Trim();
+                        var isDuplicate = IsDuplicateText(trimmed);
+                        if (!isDuplicate)
                         {
-                            try
+                            var item = new ClipItem
                             {
-                                ClipCaptured?.Invoke(this, item);
+                                ContentType = ClipContentType.Text,
+                                TextContent = trimmed,
+                                CreatedAt = DateTime.UtcNow
+                            };
+
+                            lock (_stateLock)
+                            {
+                                if (settings is { AutoStarOnDoubleCopy: true })
+                                {
+                                    _lastCapturedText = trimmed;
+                                    _lastCapturedTextTickMs = Environment.TickCount64;
+                                    _lastCapturedItem = item;
+                                    _lastCapturedStarred = false;
+                                }
+                                else
+                                {
+                                    _lastCapturedText = null;
+                                    _lastCapturedTextTickMs = 0;
+                                    _lastCapturedItem = null;
+                                    _lastCapturedStarred = false;
+                                }
                             }
-                            catch (Exception ex)
+
+                            if (!_disposed && !cancellationToken.IsCancellationRequested)
                             {
-                                Trace.TraceError($"ClipCaptured handler threw an exception: {ex}");
+                                try
+                                {
+                                    ClipCaptured?.Invoke(this, item);
+                                }
+                                catch (Exception ex)
+                                {
+                                    Trace.TraceError($"ClipCaptured handler threw an exception: {ex}");
+                                }
+                            }
+                        }
+                        else if (settings is { AutoStarOnDoubleCopy: true })
+                        {
+                            ClipItem? itemToStar = null;
+                            var nowMs = Environment.TickCount64;
+                            lock (_stateLock)
+                            {
+                                if (_lastCapturedItem is not null &&
+                                    !_lastCapturedStarred &&
+                                    _lastCapturedText is not null &&
+                                    string.Equals(_lastCapturedText, trimmed, StringComparison.Ordinal))
+                                {
+                                    if ((nowMs - _lastCapturedTextTickMs) <= 1000)
+                                    {
+                                        _lastCapturedStarred = true;
+                                        _lastCapturedItem.IsStarred = true;
+                                        itemToStar = _lastCapturedItem;
+                                    }
+                                    else
+                                    {
+                                        _lastCapturedTextTickMs = nowMs;
+                                    }
+                                }
+                            }
+
+                            if (itemToStar is not null && !_disposed && !cancellationToken.IsCancellationRequested)
+                            {
+                                try
+                                {
+                                    DoubleCopyStar?.Invoke(this, itemToStar);
+                                }
+                                catch (Exception ex)
+                                {
+                                    Trace.TraceError($"DoubleCopyStar handler threw an exception: {ex}");
+                                }
                             }
                         }
                     }
-                    else if (string.IsNullOrWhiteSpace(text) && dibBytes is not null && !IsDuplicateImage(dibBytes))
+                    else if (dibBytes is not null && !IsDuplicateImage(dibBytes))
                     {
+                        ClearLastCapturedTextState();
                         await SaveAndEmitImageAsync(dibBytes, cancellationToken).ConfigureAwait(false);
                     }
 
@@ -562,15 +813,70 @@ public sealed class ClipboardMonitorService : IDisposable
         }
     }
 
+    private void ClearLastCapturedTextState()
+    {
+        lock (_stateLock)
+        {
+            _lastCapturedText = null;
+            _lastCapturedTextTickMs = 0;
+            _lastCapturedItem = null;
+            _lastCapturedStarred = false;
+        }
+    }
+
+    private static bool IsForegroundAppExcluded(IReadOnlyList<string> excludedApps)
+    {
+        if (excludedApps.Count == 0)
+            return false;
+
+        var fg = GetForegroundWindow();
+        if (fg == IntPtr.Zero)
+            return false;
+
+        if (GetWindowThreadProcessId(fg, out var pid) == 0 || pid == 0 || pid > int.MaxValue)
+            return false;
+
+        try
+        {
+            using var proc = Process.GetProcessById((int)pid);
+            var pname = proc.ProcessName;
+            foreach (var excluded in excludedApps)
+            {
+                if (string.IsNullOrWhiteSpace(excluded))
+                    continue;
+
+                var candidate = excluded.Trim();
+                if (candidate.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+                    candidate = candidate[..^4];
+
+                if (candidate.Length == 0)
+                    continue;
+
+                if (string.Equals(pname, candidate, StringComparison.OrdinalIgnoreCase)
+                    || pname.Contains(candidate, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Trace.TraceWarning($"Could not check foreground process: {ex.Message}");
+        }
+
+        return false;
+    }
+
     private void DisposeHwndSource(HwndSource hwndSource, bool wasListening)
     {
-        if (wasListening && hwndSource.Handle != IntPtr.Zero)
+        if (wasListening && !hwndSource.IsDisposed && hwndSource.Handle != IntPtr.Zero)
         {
             RemoveClipboardFormatListener(hwndSource.Handle);
         }
 
         hwndSource.RemoveHook(WndProc);
-        hwndSource.Dispose();
+        if (!hwndSource.IsDisposed)
+            hwndSource.Dispose();
     }
 
     public void Dispose()
@@ -591,6 +897,14 @@ public sealed class ClipboardMonitorService : IDisposable
             _isListening = false;
             retryCts = _retryCts;
             _retryCts = null;
+            _selfWriteDepth = 0;
+            _selfWriteSucceeded = false;
+            _suppressedSequenceNumber = 0;
+            _suppressedUntilTickMs = 0;
+            _lastCapturedText = null;
+            _lastCapturedTextTickMs = 0;
+            _lastCapturedItem = null;
+            _lastCapturedStarred = false;
 
             if (_lastTextHash is not null)
             {
@@ -603,6 +917,11 @@ public sealed class ClipboardMonitorService : IDisposable
                 CryptographicOperations.ZeroMemory(_lastImageHash);
                 _lastImageHash = null;
             }
+        }
+
+        lock (ActiveMonitorsLock)
+        {
+            ActiveMonitors.Remove(this);
         }
 
         if (retryCts is not null)
@@ -621,17 +940,23 @@ public sealed class ClipboardMonitorService : IDisposable
             if (hwndSource.CheckAccess())
             {
                 DisposeHwndSource(hwndSource, wasListening);
+                return;
             }
-            else if (!hwndSource.Dispatcher.HasShutdownStarted && !hwndSource.Dispatcher.HasShutdownFinished)
+
+            if (!hwndSource.Dispatcher.HasShutdownStarted && !hwndSource.Dispatcher.HasShutdownFinished)
             {
                 try
                 {
                     hwndSource.Dispatcher.Invoke(() => DisposeHwndSource(hwndSource, wasListening));
+                    return;
                 }
                 catch (OperationCanceledException)
                 {
                 }
             }
+
+            if (wasListening && !hwndSource.IsDisposed && hwndSource.Handle != IntPtr.Zero)
+                RemoveClipboardFormatListener(hwndSource.Handle);
         }
     }
 }
