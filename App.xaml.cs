@@ -10,6 +10,7 @@ using Hardcodet.Wpf.TaskbarNotification;
 using SmartClipVault.Data;
 using SmartClipVault.Models;
 using SmartClipVault.Services;
+using SmartClipVault.Views;
 
 namespace SmartClipVault;
 
@@ -26,6 +27,9 @@ public partial class App : Application
     private Timer? _sensitiveClipCleanupTimer;
     private int _sensitiveCleanupRunning;
     private int _cleanedUp;
+    private GlobalHotkeyService? _hotkeyService;
+    private QuickPasteWindow? _quickPasteWindow;
+    private CancellationTokenSource? _quickPasteLoadCts;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -57,6 +61,7 @@ public partial class App : Application
                 TimeSpan.FromSeconds(60));
 
             InitializeTrayIcon();
+            InitializeHotkey();
         }
         catch
         {
@@ -124,12 +129,78 @@ public partial class App : Application
 
     private void OnTrayMouseDoubleClick(object sender, RoutedEventArgs e) => ShowMainWindow();
 
+    private void InitializeHotkey()
+    {
+        _hotkeyService = new GlobalHotkeyService();
+        _hotkeyService.HotkeyPressed += OnHotkeyPressed;
+        if (!_hotkeyService.Register())
+        {
+            Trace.TraceWarning("Global hotkey Ctrl+Shift+V could not be registered (may be in use by another app).");
+        }
+    }
+
+    private void OnHotkeyPressed(object? sender, EventArgs e)
+    {
+        if (Volatile.Read(ref _cleanedUp) != 0 || _databaseService is null)
+            return;
+
+        if (_quickPasteWindow is null)
+        {
+            _quickPasteWindow = new QuickPasteWindow();
+            _quickPasteWindow.Closed += OnQuickPasteWindowClosed;
+        }
+
+        _quickPasteWindow.BeginLoading();
+        _quickPasteWindow.ShowNearCursor();
+        _ = LoadQuickPasteClipsAsync();
+    }
+
+    private async Task LoadQuickPasteClipsAsync()
+    {
+        if (_databaseService is null)
+            return;
+
+        _quickPasteLoadCts?.Cancel();
+        _quickPasteLoadCts?.Dispose();
+        var cts = new CancellationTokenSource();
+        _quickPasteLoadCts = cts;
+
+        try
+        {
+            var clips = await _databaseService.GetRecentClipsAsync(null, 9, cts.Token).ConfigureAwait(true);
+            if (cts.Token.IsCancellationRequested || Volatile.Read(ref _cleanedUp) != 0)
+                return;
+
+            if (_quickPasteWindow is { IsVisible: true } popup)
+                popup.LoadClips(clips);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            Trace.TraceError($"Failed to load quick paste clips: {ex}");
+        }
+    }
+
+    private void OnQuickPasteWindowClosed(object? sender, EventArgs e)
+    {
+        if (sender is QuickPasteWindow popup)
+        {
+            popup.Closed -= OnQuickPasteWindowClosed;
+            if (ReferenceEquals(_quickPasteWindow, popup))
+                _quickPasteWindow = null;
+        }
+    }
+
     private void ShowMainWindow()
     {
         if (MainWindow is null)
         {
             var window = new MainWindow();
             window.Closed += OnMainWindowClosed;
+            if (_databaseService is not null)
+                window.Initialize(_databaseService);
             MainWindow = window;
         }
 
@@ -182,6 +253,31 @@ public partial class App : Application
     {
         if (Interlocked.Exchange(ref _cleanedUp, 1) != 0)
             return;
+
+        _quickPasteLoadCts?.Cancel();
+        _quickPasteLoadCts?.Dispose();
+        _quickPasteLoadCts = null;
+
+        if (_hotkeyService is not null)
+        {
+            _hotkeyService.HotkeyPressed -= OnHotkeyPressed;
+            _hotkeyService.Dispose();
+            _hotkeyService = null;
+        }
+
+        if (_quickPasteWindow is not null)
+        {
+            _quickPasteWindow.Closed -= OnQuickPasteWindowClosed;
+            _quickPasteWindow.ForceClose();
+            _quickPasteWindow = null;
+        }
+
+        if (MainWindow is not null)
+        {
+            MainWindow.Closed -= OnMainWindowClosed;
+            MainWindow.Close();
+            MainWindow = null;
+        }
 
         if (_clipboardMonitor is not null)
         {

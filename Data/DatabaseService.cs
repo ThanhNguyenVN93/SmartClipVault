@@ -1,6 +1,9 @@
 using System;
+using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.Data.Sqlite;
 using SmartClipVault.Models;
 
@@ -78,9 +81,168 @@ public class DatabaseService
                     PinBoardId INTEGER NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_clips_created_at ON clips(CreatedAt DESC);
+                CREATE INDEX IF NOT EXISTS idx_clips_pin_board_id ON clips(PinBoardId);
+                CREATE TABLE IF NOT EXISTS boards (
+                    Id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    Name TEXT NOT NULL,
+                    CreatedAt TEXT NOT NULL
+                );
                 """;
             command.ExecuteNonQuery();
         }
+    }
+
+    public List<ClipItem> GetRecentClips(string? search, int limit = 100)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(limit, 0);
+
+        lock (_syncLock)
+        {
+            using var connection = OpenConnection();
+            using var command = connection.CreateCommand();
+
+            if (string.IsNullOrWhiteSpace(search))
+            {
+                command.CommandText = """
+                    SELECT Id, ContentType, TextContent, ImagePath, OcrText, IsSensitive, CreatedAt, PinBoardId
+                    FROM clips ORDER BY CreatedAt DESC LIMIT $limit;
+                    """;
+                command.Parameters.AddWithValue("$limit", limit);
+            }
+            else
+            {
+                var escaped = EscapeLikePattern(search.Trim());
+                command.CommandText = """
+                    SELECT Id, ContentType, TextContent, ImagePath, OcrText, IsSensitive, CreatedAt, PinBoardId
+                    FROM clips
+                    WHERE IsSensitive = 0
+                      AND (TextContent LIKE $search ESCAPE '\' OR OcrText LIKE $search ESCAPE '\')
+                    ORDER BY CreatedAt DESC LIMIT $limit;
+                    """;
+                command.Parameters.AddWithValue("$search", $"%{escaped}%");
+                command.Parameters.AddWithValue("$limit", limit);
+            }
+
+            return ReadClips(command);
+        }
+    }
+
+    public Task<List<ClipItem>> GetRecentClipsAsync(string? search, int limit = 100, CancellationToken cancellationToken = default)
+        => Task.Run(() => GetRecentClips(search, limit), cancellationToken);
+
+    public List<BoardItem> GetBoards()
+    {
+        lock (_syncLock)
+        {
+            using var connection = OpenConnection();
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT Id, Name, CreatedAt FROM boards ORDER BY CreatedAt DESC;";
+            var boards = new List<BoardItem>();
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                boards.Add(new BoardItem
+                {
+                    Id = reader.GetInt64(0),
+                    Name = reader.GetString(1),
+                    CreatedAt = DateTime.Parse(reader.GetString(2), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind)
+                });
+            }
+            return boards;
+        }
+    }
+
+    public Task<List<BoardItem>> GetBoardsAsync(CancellationToken cancellationToken = default)
+        => Task.Run(GetBoards, cancellationToken);
+
+    public long CreateBoard(string name)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        var normalizedName = name.Trim();
+
+        lock (_syncLock)
+        {
+            using var connection = OpenConnection();
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                INSERT INTO boards (Name, CreatedAt) VALUES ($name, $createdAt);
+                SELECT last_insert_rowid();
+                """;
+            command.Parameters.AddWithValue("$name", normalizedName);
+            command.Parameters.AddWithValue("$createdAt", DateTime.UtcNow.ToString("O"));
+            var result = command.ExecuteScalar();
+            return result is long id ? id : Convert.ToInt64(result, CultureInfo.InvariantCulture);
+        }
+    }
+
+    public Task<long> CreateBoardAsync(string name, CancellationToken cancellationToken = default)
+        => Task.Run(() => CreateBoard(name), cancellationToken);
+
+    public void PinClipToBoard(long clipId, long? boardId)
+    {
+        if (clipId <= 0)
+            return;
+
+        lock (_syncLock)
+        {
+            using var connection = OpenConnection();
+            using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE clips SET PinBoardId = $boardId WHERE Id = $id;";
+            command.Parameters.AddWithValue("$boardId", (object?)boardId ?? DBNull.Value);
+            command.Parameters.AddWithValue("$id", clipId);
+            command.ExecuteNonQuery();
+        }
+    }
+
+    public Task PinClipToBoardAsync(long clipId, long? boardId, CancellationToken cancellationToken = default)
+        => Task.Run(() => PinClipToBoard(clipId, boardId), cancellationToken);
+
+    public List<ClipItem> GetBoardClips(long boardId)
+    {
+        if (boardId <= 0)
+            return [];
+
+        lock (_syncLock)
+        {
+            using var connection = OpenConnection();
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT Id, ContentType, TextContent, ImagePath, OcrText, IsSensitive, CreatedAt, PinBoardId
+                FROM clips WHERE PinBoardId = $boardId ORDER BY CreatedAt DESC;
+                """;
+            command.Parameters.AddWithValue("$boardId", boardId);
+            return ReadClips(command);
+        }
+    }
+
+    public Task<List<ClipItem>> GetBoardClipsAsync(long boardId, CancellationToken cancellationToken = default)
+        => Task.Run(() => GetBoardClips(boardId), cancellationToken);
+
+    private static string EscapeLikePattern(string value)
+        => value
+            .Replace(@"\", @"\\", StringComparison.Ordinal)
+            .Replace("%", @"\%", StringComparison.Ordinal)
+            .Replace("_", @"\_", StringComparison.Ordinal);
+
+    private static List<ClipItem> ReadClips(SqliteCommand command)
+    {
+        var clips = new List<ClipItem>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            clips.Add(new ClipItem
+            {
+                Id = reader.GetInt64(0),
+                ContentType = (ClipContentType)reader.GetInt32(1),
+                TextContent = reader.IsDBNull(2) ? null : reader.GetString(2),
+                ImagePath = reader.IsDBNull(3) ? null : reader.GetString(3),
+                OcrText = reader.IsDBNull(4) ? null : reader.GetString(4),
+                IsSensitive = reader.GetInt32(5) != 0,
+                CreatedAt = DateTime.Parse(reader.GetString(6), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
+                PinBoardId = reader.IsDBNull(7) ? null : reader.GetInt64(7)
+            });
+        }
+        return clips;
     }
 
     public long InsertClip(ClipItem item)
