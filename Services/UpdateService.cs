@@ -17,13 +17,13 @@ namespace SmartClipVault.Services;
 public sealed class UpdateService
 {
     private const string ReleasesApiUrl =
-        "https://api.github.com/repos/kiemt/SmartClipVault/releases/latest";
+        "https://api.github.com/repos/ThanhNguyenVN93/SmartClipVault/releases/latest";
 
     private const string AllowedApiPrefix =
-        "https://api.github.com/repos/kiemt/SmartClipVault/";
+        "https://api.github.com/repos/ThanhNguyenVN93/SmartClipVault/";
 
     public const string AllowedAssetPrefix =
-        "https://github.com/kiemt/SmartClipVault/releases/download/";
+        "https://github.com/ThanhNguyenVN93/SmartClipVault/releases/download/";
 
     private static readonly string[] AllowedAssetRedirectHosts =
     [
