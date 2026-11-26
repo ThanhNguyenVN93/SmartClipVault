@@ -9,6 +9,8 @@
     <sys:String x:Key="Tray_Language">Language</sys:String>
     <sys:String x:Key="Tray_Exit">Exit</sys:String>
     <sys:String x:Key="Tray_CheckUpdates">Check for Updates…</sys:String>
+    <sys:String x:Key="Tray_ReportBug">Report Bug (GitHub)…</sys:String>
+    <sys:String x:Key="Tray_Donate">Donate ❤️</sys:String>
 
     <!-- MainWindow headers -->
     <sys:String x:Key="Main_ClipboardHistory">Clipboard History</sys:String>

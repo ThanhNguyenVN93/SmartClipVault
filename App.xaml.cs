@@ -27,6 +27,8 @@ public partial class App : Application
     private MenuItem? _backupMenuItem;
     private MenuItem? _restoreMenuItem;
     private MenuItem? _updateMenuItem;
+    private MenuItem? _reportBugMenuItem;
+    private MenuItem? _donateMenuItem;
     private MenuItem? _langMenuItem;
     private MenuItem? _langEnMenuItem;
     private MenuItem? _langViMenuItem;
@@ -257,6 +259,14 @@ public partial class App : Application
         _updateMenuItem.SetResourceReference(HeaderedItemsControl.HeaderProperty, "Tray_CheckUpdates");
         _updateMenuItem.Click += OnTrayCheckUpdatesClick;
 
+        _reportBugMenuItem = new MenuItem();
+        _reportBugMenuItem.SetResourceReference(HeaderedItemsControl.HeaderProperty, "Tray_ReportBug");
+        _reportBugMenuItem.Click += OnTrayReportBugClick;
+
+        _donateMenuItem = new MenuItem();
+        _donateMenuItem.SetResourceReference(HeaderedItemsControl.HeaderProperty, "Tray_Donate");
+        _donateMenuItem.Click += OnTrayDonateClick;
+
         contextMenu.Items.Add(_showMenuItem);
         contextMenu.Items.Add(_settingsMenuItem);
         contextMenu.Items.Add(new Separator());
@@ -266,6 +276,8 @@ public partial class App : Application
         contextMenu.Items.Add(_langMenuItem);
         contextMenu.Items.Add(new Separator());
         contextMenu.Items.Add(_updateMenuItem);
+        contextMenu.Items.Add(_reportBugMenuItem);
+        contextMenu.Items.Add(_donateMenuItem);
         contextMenu.Items.Add(new Separator());
         contextMenu.Items.Add(_exitMenuItem);
 
@@ -864,6 +876,18 @@ public partial class App : Application
             _updateMenuItem = null;
         }
 
+        if (_reportBugMenuItem is not null)
+        {
+            _reportBugMenuItem.Click -= OnTrayReportBugClick;
+            _reportBugMenuItem = null;
+        }
+
+        if (_donateMenuItem is not null)
+        {
+            _donateMenuItem.Click -= OnTrayDonateClick;
+            _donateMenuItem = null;
+        }
+
         if (_langEnMenuItem is not null)
         {
             _langEnMenuItem.Click -= OnLangEnMenuClick;
@@ -912,6 +936,28 @@ public partial class App : Application
         catch (Exception ex)
         {
             Trace.TraceError($"Deferred old-update cleanup failed: {ex}");
+        }
+    }
+
+    private void OnTrayReportBugClick(object sender, RoutedEventArgs e)
+    {
+        OpenExternalUrl("https://github.com/ThanhNguyenVN93/SmartClipVault/issues");
+    }
+
+    private void OnTrayDonateClick(object sender, RoutedEventArgs e)
+    {
+        OpenExternalUrl("http://nguyenthanhdev.com/donate");
+    }
+
+    private static void OpenExternalUrl(string url)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            Trace.TraceWarning($"Failed to open URL '{url}': {ex.Message}");
         }
     }
 

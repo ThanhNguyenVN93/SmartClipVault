@@ -9,6 +9,8 @@
     <sys:String x:Key="Tray_Language">Ngôn ngữ</sys:String>
     <sys:String x:Key="Tray_Exit">Thoát</sys:String>
     <sys:String x:Key="Tray_CheckUpdates">Kiểm tra cập nhật…</sys:String>
+    <sys:String x:Key="Tray_ReportBug">Báo lỗi (GitHub)…</sys:String>
+    <sys:String x:Key="Tray_Donate">Ủng hộ (Donate) ❤️</sys:String>
 
     <!-- MainWindow headers -->
     <sys:String x:Key="Main_ClipboardHistory">Lịch sử Clipboard</sys:String>
