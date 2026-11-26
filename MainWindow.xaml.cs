@@ -76,6 +76,9 @@ public partial class MainWindow : Window
     private CancellationTokenSource? _pinnedCts;
     private CancellationTokenSource? _thumbnailCts;
     private bool _isClosed;
+    private bool _isLocked;
+
+    internal bool IsLocked => _isLocked;
 
     private static SolidColorBrush CreateFrozenBrush(byte r, byte g, byte b)
     {
@@ -732,6 +735,147 @@ public partial class MainWindow : Window
 
     private void OnLangViClick(object sender, RoutedEventArgs e)
         => (Application.Current as App)?.SetLanguage("vi");
+
+    private void OnWindowPreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.L && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
+        {
+            HandleCtrlL();
+            e.Handled = true;
+        }
+    }
+
+    private void HandleCtrlL()
+    {
+        if (_isLocked)
+            return;
+
+        var settings = (Application.Current as App)?.Settings?.Current;
+        if (settings?.PinHash is null || settings.PinSalt is null)
+        {
+            MessageBox.Show(this,
+                TryGetResource("Lock_NoPinWarning") ?? "No PIN configured. Set a PIN in Settings to enable locking.",
+                "SmartClipVault", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        ApplyLockState(true);
+    }
+
+    private int _failedPinAttempts;
+    private DateTime _pinCooldownUntilUtc = DateTime.MinValue;
+
+    public void ApplyLockState(bool locked)
+    {
+        _isLocked = locked;
+        (Application.Current as App)?.SetLocked(locked);
+        if (locked)
+        {
+            LockPinBox.Clear();
+            LockErrorText.Visibility = Visibility.Collapsed;
+            LockOverlay.Visibility = Visibility.Visible;
+            LockPinBox.Focus();
+        }
+        else
+        {
+            _failedPinAttempts = 0;
+            _pinCooldownUntilUtc = DateTime.MinValue;
+            LockOverlay.Visibility = Visibility.Collapsed;
+            LockPinBox.Clear();
+            LockErrorText.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    private void OnLockPinKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter)
+            TryUnlock();
+    }
+
+    private void OnUnlockClick(object sender, RoutedEventArgs e) => TryUnlock();
+
+    private void TryUnlock()
+    {
+        if (!_isLocked)
+            return;
+
+        var now = DateTime.UtcNow;
+        if (now < _pinCooldownUntilUtc)
+        {
+            var secs = Math.Max(1, (int)Math.Ceiling((_pinCooldownUntilUtc - now).TotalSeconds));
+            LockErrorText.Text = $"Too many failed attempts. Try again in {secs}s.";
+            LockErrorText.Visibility = Visibility.Visible;
+            LockPinBox.Clear();
+            LockPinBox.Focus();
+            return;
+        }
+
+        var settings = (Application.Current as App)?.Settings?.Current;
+        var pin = LockPinBox.Password;
+
+        if (settings?.PinHash is not null && settings.PinSalt is not null &&
+            SettingsService.VerifyPin(pin, settings.PinHash, settings.PinSalt))
+        {
+            ApplyLockState(false);
+            RefreshClips();
+        }
+        else
+        {
+            _failedPinAttempts++;
+            if (_failedPinAttempts >= 5)
+            {
+                _pinCooldownUntilUtc = DateTime.UtcNow.AddSeconds(30);
+                _failedPinAttempts = 0;
+            }
+            LockErrorText.Text = TryGetResource("Lock_IncorrectPin") ?? "Incorrect PIN. Please try again.";
+            LockErrorText.Visibility = Visibility.Visible;
+            LockPinBox.Clear();
+            LockPinBox.Focus();
+        }
+    }
+
+    private void OnClipContextMenuOpened(object sender, RoutedEventArgs e)
+    {
+        var isText = ClipListBox.SelectedItem is ClipRow r
+            && r.Clip.ContentType == ClipContentType.Text
+            && !r.Clip.IsSensitive
+            && !string.IsNullOrEmpty(r.Clip.TextContent);
+
+        if (sender is ContextMenu cm && cm.Items.Count > 0 && cm.Items[0] is MenuItem specialOps)
+            specialOps.IsEnabled = isText;
+    }
+
+    private void OnTransformClick(object sender, RoutedEventArgs e)
+    {
+        if (ClipListBox.SelectedItem is not ClipRow row)
+            return;
+        if (row.Clip.ContentType != ClipContentType.Text
+            || row.Clip.IsSensitive
+            || string.IsNullOrEmpty(row.Clip.TextContent))
+            return;
+
+        var text = row.Clip.TextContent;
+        var operation = (sender as MenuItem)?.Tag as string;
+
+        var result = operation switch
+        {
+            "UpperCase"   => TextTransformService.ToUpperCase(text),
+            "LowerCase"   => TextTransformService.ToLowerCase(text),
+            "CamelCase"   => TextTransformService.ToCamelCase(text),
+            "SnakeCase"   => TextTransformService.ToSnakeCase(text),
+            "JsonPretty"  => TextTransformService.JsonPretty(text),
+            "JsonMinify"  => TextTransformService.JsonMinify(text),
+            "Base64Encode" => TextTransformService.Base64Encode(text),
+            "Base64Decode" => TextTransformService.Base64Decode(text),
+            "UrlEncode"   => TextTransformService.UrlEncode(text),
+            "UrlDecode"   => TextTransformService.UrlDecode(text),
+            "TrimDedupe"  => TextTransformService.TrimAndRemoveDuplicateLines(text),
+            _             => null
+        };
+
+        if (result is not null)
+            PasteHelper.TrySetClipboardText(result);
+    }
 
     private async Task SafeCopyToClipboardAsync(ClipItem clip)
     {

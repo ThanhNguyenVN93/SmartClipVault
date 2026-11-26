@@ -79,4 +79,43 @@
     <sys:String x:Key="Dlg_UpdateAvailable">Phiên bản {0} đã có sẵn. Bạn có muốn cập nhật ngay không?</sys:String>
     <sys:String x:Key="Dlg_UpToDate">SmartClipVault đã là phiên bản mới nhất.</sys:String>
     <sys:String x:Key="Dlg_UpdateFailed">Cập nhật thất bại: {0}</sys:String>
+
+    <!-- Context menu transforms -->
+    <sys:String x:Key="Menu_SpecialOps">Thao tác sao chép/dán đặc biệt</sys:String>
+    <sys:String x:Key="Transform_UpperCase">CHỮ HOA</sys:String>
+    <sys:String x:Key="Transform_LowerCase">chữ thường</sys:String>
+    <sys:String x:Key="Transform_CamelCase">camelCase</sys:String>
+    <sys:String x:Key="Transform_SnakeCase">snake_case</sys:String>
+    <sys:String x:Key="Transform_JsonPretty">JSON đẹp</sys:String>
+    <sys:String x:Key="Transform_JsonMinify">JSON thu gọn</sys:String>
+    <sys:String x:Key="Transform_Base64Encode">Mã hóa Base64</sys:String>
+    <sys:String x:Key="Transform_Base64Decode">Giải mã Base64</sys:String>
+    <sys:String x:Key="Transform_UrlEncode">Mã hóa URL</sys:String>
+    <sys:String x:Key="Transform_UrlDecode">Giải mã URL</sys:String>
+    <sys:String x:Key="Transform_TrimDedupe">Cắt &amp; Xóa dòng trùng</sys:String>
+
+    <!-- Lock screen -->
+    <sys:String x:Key="Lock_Title">SmartClipVault đã bị khóa</sys:String>
+    <sys:String x:Key="Lock_Unlock">Mở khóa</sys:String>
+    <sys:String x:Key="Lock_PinPlaceholder">Nhập mã PIN…</sys:String>
+    <sys:String x:Key="Lock_NoPinWarning">Chưa cài mã PIN. Hãy cài PIN trong Cài đặt để sử dụng khóa màn hình.</sys:String>
+    <sys:String x:Key="Lock_IncorrectPin">Mã PIN không đúng. Vui lòng thử lại.</sys:String>
+
+    <!-- Settings — PIN lock -->
+    <sys:String x:Key="Settings_PinLock_Header">Khóa PIN</sys:String>
+    <sys:String x:Key="Settings_PinStatus_Set">Đã cài mã PIN</sys:String>
+    <sys:String x:Key="Settings_PinStatus_NotSet">Chưa cài mã PIN</sys:String>
+    <sys:String x:Key="Settings_PinNew">PIN mới (4–8 chữ số):</sys:String>
+    <sys:String x:Key="Settings_PinConfirm">Xác nhận PIN:</sys:String>
+    <sys:String x:Key="Settings_PinSet">Đặt / Đổi PIN</sys:String>
+    <sys:String x:Key="Settings_PinRemove">Xóa PIN</sys:String>
+    <sys:String x:Key="Settings_PinSaved">Đã lưu mã PIN.</sys:String>
+    <sys:String x:Key="Settings_PinRemoved">Đã xóa mã PIN.</sys:String>
+    <sys:String x:Key="Settings_PinMismatch">Hai mã PIN không khớp.</sys:String>
+    <sys:String x:Key="Settings_PinInvalidLength">PIN phải có 4–8 chữ số.</sys:String>
+    <sys:String x:Key="Settings_PinDigitsOnly">PIN chỉ được chứa chữ số (0–9).</sys:String>
+
+    <!-- Settings — backup options -->
+    <sys:String x:Key="Settings_IncludeImagesInBackup">Bao gồm hình ảnh khi sao lưu</sys:String>
+    <sys:String x:Key="Settings_AutoBackupBeforeRestore">Tự sao lưu trước khi khôi phục</sys:String>
 </ResourceDictionary>

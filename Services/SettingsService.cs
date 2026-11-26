@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.Win32;
 using SmartClipVault.Models;
@@ -189,6 +190,48 @@ public sealed class SettingsService
         ExcludedApps = s.ExcludedApps is null ? ["KeePass", "Bitwarden", "1Password"] : new List<string>(s.ExcludedApps),
         AutoClearDays = s.AutoClearDays,
         AutoStarOnDoubleCopy = s.AutoStarOnDoubleCopy,
-        UiFontScale = s.UiFontScale
+        UiFontScale = s.UiFontScale,
+        IncludeImagesInBackup = s.IncludeImagesInBackup,
+        AutoBackupBeforeRestore = s.AutoBackupBeforeRestore,
+        PinHash = s.PinHash,
+        PinSalt = s.PinSalt,
     };
+
+    private const int PinPbkdf2Iterations = 600_000;
+    private const int PinSaltBytes = 16;
+    private const int PinHashBytes = 32;
+
+    public static bool IsValidPinFormat(string? pin)
+        => !string.IsNullOrEmpty(pin) && pin.Length is >= 4 and <= 8 && pin.All(char.IsAsciiDigit);
+
+    public static (string Hash, string Salt) CreatePinHash(string pin)
+    {
+        if (!IsValidPinFormat(pin))
+            throw new ArgumentException("PIN must be 4 to 8 ASCII digits.", nameof(pin));
+
+        var salt = RandomNumberGenerator.GetBytes(PinSaltBytes);
+        var hash = Rfc2898DeriveBytes.Pbkdf2(pin, salt, PinPbkdf2Iterations, HashAlgorithmName.SHA256, PinHashBytes);
+        return (Convert.ToBase64String(hash), Convert.ToBase64String(salt));
+    }
+
+    public static bool VerifyPin(string? pin, string? storedHash, string? storedSalt)
+    {
+        if (string.IsNullOrEmpty(pin) || string.IsNullOrEmpty(storedHash) || string.IsNullOrEmpty(storedSalt))
+            return false;
+
+        try
+        {
+            var salt = Convert.FromBase64String(storedSalt);
+            var actual = Convert.FromBase64String(storedHash);
+            if (salt.Length != PinSaltBytes || actual.Length != PinHashBytes)
+                return false;
+
+            var expected = Rfc2898DeriveBytes.Pbkdf2(pin, salt, PinPbkdf2Iterations, HashAlgorithmName.SHA256, PinHashBytes);
+            return CryptographicOperations.FixedTimeEquals(expected, actual);
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+    }
 }

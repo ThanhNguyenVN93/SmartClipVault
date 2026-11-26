@@ -28,14 +28,14 @@ public class BackupService
             : imageDirectory;
     }
 
-    public async Task ExportAsync(string zipPath, CancellationToken ct = default)
+    public async Task ExportAsync(string zipPath, bool includeImages = true, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(zipPath);
 
         await _operationGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            await Task.Run(() => Export(zipPath, ct), ct).ConfigureAwait(false);
+            await Task.Run(() => Export(zipPath, includeImages, ct), ct).ConfigureAwait(false);
         }
         finally
         {
@@ -43,7 +43,7 @@ public class BackupService
         }
     }
 
-    private void Export(string zipPath, CancellationToken ct)
+    private void Export(string zipPath, bool includeImages, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
 
@@ -62,17 +62,20 @@ public class BackupService
             {
                 AddFileToArchive(archive, tempDb, "smartclipvault.db", ct);
 
-                var imgDir = _imageDirectory;
-                if (Directory.Exists(imgDir))
+                if (includeImages)
                 {
-                    foreach (var file in Directory.EnumerateFiles(imgDir, "*", SearchOption.TopDirectoryOnly))
+                    var imgDir = _imageDirectory;
+                    if (Directory.Exists(imgDir))
                     {
-                        ct.ThrowIfCancellationRequested();
-                        if (string.Equals(Path.GetFullPath(file), fullZipPath, StringComparison.OrdinalIgnoreCase))
-                            continue;
+                        foreach (var file in Directory.EnumerateFiles(imgDir, "*", SearchOption.TopDirectoryOnly))
+                        {
+                            ct.ThrowIfCancellationRequested();
+                            if (string.Equals(Path.GetFullPath(file), fullZipPath, StringComparison.OrdinalIgnoreCase))
+                                continue;
 
-                        var entryName = "images/" + Path.GetFileName(file);
-                        AddFileToArchive(archive, file, entryName, ct);
+                            var entryName = "images/" + Path.GetFileName(file);
+                            AddFileToArchive(archive, file, entryName, ct);
+                        }
                     }
                 }
             }

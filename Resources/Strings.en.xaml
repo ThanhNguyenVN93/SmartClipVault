@@ -79,4 +79,43 @@
     <sys:String x:Key="Dlg_UpdateAvailable">Version {0} is available. Do you want to update now?</sys:String>
     <sys:String x:Key="Dlg_UpToDate">SmartClipVault is up to date.</sys:String>
     <sys:String x:Key="Dlg_UpdateFailed">Update failed: {0}</sys:String>
+
+    <!-- Context menu transforms -->
+    <sys:String x:Key="Menu_SpecialOps">Special Copy/Paste Operations</sys:String>
+    <sys:String x:Key="Transform_UpperCase">UPPER CASE</sys:String>
+    <sys:String x:Key="Transform_LowerCase">lower case</sys:String>
+    <sys:String x:Key="Transform_CamelCase">camelCase</sys:String>
+    <sys:String x:Key="Transform_SnakeCase">snake_case</sys:String>
+    <sys:String x:Key="Transform_JsonPretty">JSON Pretty</sys:String>
+    <sys:String x:Key="Transform_JsonMinify">JSON Minify</sys:String>
+    <sys:String x:Key="Transform_Base64Encode">Base64 Encode</sys:String>
+    <sys:String x:Key="Transform_Base64Decode">Base64 Decode</sys:String>
+    <sys:String x:Key="Transform_UrlEncode">URL Encode</sys:String>
+    <sys:String x:Key="Transform_UrlDecode">URL Decode</sys:String>
+    <sys:String x:Key="Transform_TrimDedupe">Trim &amp; Remove Duplicate Lines</sys:String>
+
+    <!-- Lock screen -->
+    <sys:String x:Key="Lock_Title">SmartClipVault is locked</sys:String>
+    <sys:String x:Key="Lock_Unlock">Unlock</sys:String>
+    <sys:String x:Key="Lock_PinPlaceholder">Enter PIN…</sys:String>
+    <sys:String x:Key="Lock_NoPinWarning">No PIN configured. Set a PIN in Settings to enable locking.</sys:String>
+    <sys:String x:Key="Lock_IncorrectPin">Incorrect PIN. Please try again.</sys:String>
+
+    <!-- Settings — PIN lock -->
+    <sys:String x:Key="Settings_PinLock_Header">PIN Lock</sys:String>
+    <sys:String x:Key="Settings_PinStatus_Set">PIN is set</sys:String>
+    <sys:String x:Key="Settings_PinStatus_NotSet">No PIN configured</sys:String>
+    <sys:String x:Key="Settings_PinNew">New PIN (4–8 digits):</sys:String>
+    <sys:String x:Key="Settings_PinConfirm">Confirm PIN:</sys:String>
+    <sys:String x:Key="Settings_PinSet">Set / Change PIN</sys:String>
+    <sys:String x:Key="Settings_PinRemove">Remove PIN</sys:String>
+    <sys:String x:Key="Settings_PinSaved">PIN saved successfully.</sys:String>
+    <sys:String x:Key="Settings_PinRemoved">PIN removed.</sys:String>
+    <sys:String x:Key="Settings_PinMismatch">PINs do not match.</sys:String>
+    <sys:String x:Key="Settings_PinInvalidLength">PIN must be 4–8 digits.</sys:String>
+    <sys:String x:Key="Settings_PinDigitsOnly">PIN must contain only digits (0–9).</sys:String>
+
+    <!-- Settings — backup options -->
+    <sys:String x:Key="Settings_IncludeImagesInBackup">Include images in backup</sys:String>
+    <sys:String x:Key="Settings_AutoBackupBeforeRestore">Auto-backup before restore</sys:String>
 </ResourceDictionary>

@@ -29,6 +29,9 @@ public partial class SettingsWindow : Window
         AutoStarCheck.IsChecked = s.AutoStarOnDoubleCopy;
         ExcludedAppsBox.Text = string.Join(Environment.NewLine, s.ExcludedApps);
         AutoClearDaysBox.Text = s.AutoClearDays.ToString(CultureInfo.InvariantCulture);
+        IncludeImagesCheck.IsChecked = s.IncludeImagesInBackup;
+        AutoBackupBeforeRestoreCheck.IsChecked = s.AutoBackupBeforeRestore;
+        UpdatePinStatus(s.PinHash != null);
 
         foreach (ComboBoxItem item in FontScaleCombo.Items)
         {
@@ -43,6 +46,108 @@ public partial class SettingsWindow : Window
 
         if (FontScaleCombo.SelectedItem is null && FontScaleCombo.Items.Count > 1)
             FontScaleCombo.SelectedIndex = 1;
+    }
+
+    private void UpdatePinStatus(bool pinIsSet)
+    {
+        PinStatusText.Text = pinIsSet
+            ? Application.Current?.TryFindResource("Settings_PinStatus_Set") as string ?? "PIN is set"
+            : Application.Current?.TryFindResource("Settings_PinStatus_NotSet") as string ?? "No PIN configured";
+        RemovePinButton.IsEnabled = pinIsSet;
+    }
+
+    private static bool IsValidPin(string pin, out string error)
+    {
+        if (pin.Length < 4 || pin.Length > 8)
+        {
+            error = Application.Current?.TryFindResource("Settings_PinInvalidLength") as string
+                ?? "PIN must be 4–8 digits.";
+            return false;
+        }
+        foreach (var c in pin)
+        {
+            if (!char.IsAsciiDigit(c))
+            {
+                error = Application.Current?.TryFindResource("Settings_PinDigitsOnly") as string
+                    ?? "PIN must contain only digits (0–9).";
+                return false;
+            }
+        }
+        error = string.Empty;
+        return true;
+    }
+
+    private void OnSetPinClick(object sender, RoutedEventArgs e)
+    {
+        var newPin = NewPinBox.Password;
+        var confirmPin = ConfirmPinBox.Password;
+
+        if (!IsValidPin(newPin, out var pinError))
+        {
+            MessageBox.Show(this, pinError, Title, MessageBoxButton.OK, MessageBoxImage.Warning);
+            NewPinBox.Focus();
+            return;
+        }
+
+        if (newPin != confirmPin)
+        {
+            var msg = Application.Current?.TryFindResource("Settings_PinMismatch") as string
+                ?? "PINs do not match.";
+            MessageBox.Show(this, msg, Title, MessageBoxButton.OK, MessageBoxImage.Warning);
+            ConfirmPinBox.Focus();
+            return;
+        }
+
+        var updated = _settingsService.GetSnapshot();
+        var (hash, salt) = SettingsService.CreatePinHash(newPin);
+        updated.PinHash = hash;
+        updated.PinSalt = salt;
+
+        try
+        {
+            _settingsService.Save(updated);
+        }
+        catch (Exception ex)
+        {
+            var fmt = Application.Current?.TryFindResource("Settings_SaveFailed") as string
+                ?? "Failed to save settings: {0}";
+            MessageBox.Show(this, string.Format(CultureInfo.CurrentCulture, fmt, ex.Message),
+                Title, MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
+
+        NewPinBox.Clear();
+        ConfirmPinBox.Clear();
+        UpdatePinStatus(pinIsSet: true);
+
+        var successMsg = Application.Current?.TryFindResource("Settings_PinSaved") as string
+            ?? "PIN saved successfully.";
+        MessageBox.Show(this, successMsg, Title, MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
+    private void OnRemovePinClick(object sender, RoutedEventArgs e)
+    {
+        var updated = _settingsService.GetSnapshot();
+        updated.PinHash = null;
+        updated.PinSalt = null;
+
+        try
+        {
+            _settingsService.Save(updated);
+        }
+        catch (Exception ex)
+        {
+            var fmt = Application.Current?.TryFindResource("Settings_SaveFailed") as string
+                ?? "Failed to save settings: {0}";
+            MessageBox.Show(this, string.Format(CultureInfo.CurrentCulture, fmt, ex.Message),
+                Title, MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
+
+        UpdatePinStatus(pinIsSet: false);
+
+        var msg = Application.Current?.TryFindResource("Settings_PinRemoved") as string ?? "PIN removed.";
+        MessageBox.Show(this, msg, Title, MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
     private void OnSaveClick(object sender, RoutedEventArgs e)
@@ -73,6 +178,7 @@ public partial class SettingsWindow : Window
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
+        var current = _settingsService.GetSnapshot();
         var updated = new AppSettings
         {
             AutoStartWithWindows = AutoStartCheck.IsChecked == true,
@@ -82,7 +188,11 @@ public partial class SettingsWindow : Window
             AutoStarOnDoubleCopy = AutoStarCheck.IsChecked == true,
             ExcludedApps = excluded,
             AutoClearDays = days,
-            UiFontScale = scale
+            UiFontScale = scale,
+            IncludeImagesInBackup = IncludeImagesCheck.IsChecked == true,
+            AutoBackupBeforeRestore = AutoBackupBeforeRestoreCheck.IsChecked == true,
+            PinHash = current.PinHash,
+            PinSalt = current.PinSalt,
         };
 
         try

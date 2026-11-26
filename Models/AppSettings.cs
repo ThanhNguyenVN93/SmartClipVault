@@ -13,4 +13,8 @@ public sealed class AppSettings
     public int AutoClearDays { get; set; }
     public bool AutoStarOnDoubleCopy { get; set; }
     public double UiFontScale { get; set; } = 1.0;
+    public bool IncludeImagesInBackup { get; set; } = true;
+    public bool AutoBackupBeforeRestore { get; set; } = true;
+    public string? PinHash { get; set; }
+    public string? PinSalt { get; set; }
 }

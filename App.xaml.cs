@@ -247,11 +247,32 @@ public partial class App : Application
         _trayIcon.TrayMouseDoubleClick += OnTrayMouseDoubleClick;
     }
 
+    public bool IsLocked { get; private set; }
+
+    internal void SetLocked(bool locked)
+    {
+        IsLocked = locked;
+    }
+
     private async void OnTrayBackupClick(object sender, RoutedEventArgs e)
-        => await RunBackupDialogAsync().ConfigureAwait(true);
+    {
+        if (IsLocked)
+        {
+            ShowMainWindow();
+            return;
+        }
+        await RunBackupDialogAsync().ConfigureAwait(true);
+    }
 
     private async void OnTrayRestoreClick(object sender, RoutedEventArgs e)
-        => await RunRestoreDialogAsync().ConfigureAwait(true);
+    {
+        if (IsLocked)
+        {
+            ShowMainWindow();
+            return;
+        }
+        await RunRestoreDialogAsync().ConfigureAwait(true);
+    }
 
     internal Task RunBackupDialogAsync(Window? owner = null, CancellationToken cancellationToken = default)
     {
@@ -268,10 +289,11 @@ public partial class App : Application
         if (!ShowFileDialog(dlg, owner) || Volatile.Read(ref _cleanedUp) != 0 || cancellationToken.IsCancellationRequested)
             return Task.CompletedTask;
 
+        var includeImages = _settingsService?.Current.IncludeImagesInBackup ?? true;
         return RunBackupTransferAsync(
             owner,
             cancellationToken,
-            (backup, ct) => backup.ExportAsync(dlg.FileName, ct),
+            (backup, ct) => backup.ExportAsync(dlg.FileName, includeImages, ct),
             "Dlg_BackupSuccess", "Backup created successfully.",
             "Dlg_BackupFailed", "Backup failed: {0}");
     }
@@ -295,6 +317,17 @@ public partial class App : Application
             cancellationToken,
             async (backup, ct) =>
             {
+                if (_settingsService?.Current.AutoBackupBeforeRestore == true)
+                {
+                    var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+                    var backupDir = Path.Combine(localAppData, "SmartClipVault");
+                    Directory.CreateDirectory(backupDir);
+                    var autoPath = Path.Combine(backupDir,
+                        $"auto_before_restore_{DateTime.Now:yyyyMMdd_HHmmss}.zip");
+                    await backup.ExportAsync(autoPath, includeImages: true, ct).ConfigureAwait(true);
+                    Trace.TraceInformation($"Auto-backup created before restore: {autoPath}");
+                }
+
                 await backup.RestoreAsync(dlg.FileName, ct).ConfigureAwait(true);
                 if (Volatile.Read(ref _cleanedUp) != 0 || cancellationToken.IsCancellationRequested)
                     return;
@@ -469,7 +502,14 @@ public partial class App : Application
     }
 
     private void OnTraySettingsClick(object sender, RoutedEventArgs e)
-        => ShowSettingsWindow();
+    {
+        if (IsLocked)
+        {
+            ShowMainWindow();
+            return;
+        }
+        ShowSettingsWindow();
+    }
 
     private void OnSettingsChanged(object? sender, AppSettings settings)
     {
@@ -539,7 +579,7 @@ public partial class App : Application
 
     private void OnHotkeyPressed(object? sender, EventArgs e)
     {
-        if (Volatile.Read(ref _cleanedUp) != 0 || _databaseService is null)
+        if (Volatile.Read(ref _cleanedUp) != 0 || _databaseService is null || IsLocked)
             return;
 
         if (_quickPasteWindow is null)
@@ -610,8 +650,13 @@ public partial class App : Application
             MainWindow.WindowState = WindowState.Normal;
         }
         MainWindow.Activate();
-        if (wasHidden && MainWindow is SmartClipVault.MainWindow mw)
-            mw.RefreshClips();
+        if (MainWindow is SmartClipVault.MainWindow mw)
+        {
+            if (IsLocked)
+                mw.ApplyLockState(true);
+            else if (wasHidden)
+                mw.RefreshClips();
+        }
     }
 
     private void OnMainWindowClosed(object? sender, EventArgs e)
